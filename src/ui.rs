@@ -8,6 +8,17 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    // Top-level split: tab bar (1 line) | content area (rest)
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(frame.area());
+
+    draw_tab_bar(frame, app, outer[0]);
+
+    // Content area below tab bar
+    let content = outer[1];
+
     // Outer vertical split: top panels (~75%) | log (~20%) | status bar (1 line)
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -16,7 +27,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Constraint::Percentage(20),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(content);
 
     // Top row: Workflows (~25%) | Tasks (~75%)
     let top = Layout::default()
@@ -139,6 +150,52 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         None => {}
     }
+}
+
+/// Renders the single-line tab bar at the top of the screen.
+///
+/// Tab 0 is always `[Workflows]`. Runner tabs show `[name]`, `[name ✓]`, or `[name !]`.
+/// The active tab is highlighted with REVERSED style. Tabs that don't fit are cropped.
+fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used_width: u16 = 0;
+
+    // Tab 0: Workflows
+    let label = "[Workflows]";
+    let label_w = label.chars().count() as u16;
+    if used_width + label_w <= area.width {
+        let style = if app.active_tab == 0 {
+            Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(label, style));
+        used_width += label_w;
+    }
+
+    // Runner tabs (1-indexed in active_tab)
+    for (i, tab) in app.runner_tabs.iter().enumerate() {
+        let tab_idx = i + 1;
+        let suffix = match &tab.state {
+            RunnerTabState::Running { .. } => String::new(),
+            RunnerTabState::Done => " \u{2713}".to_string(),  // ✓
+            RunnerTabState::Error(_) => " !".to_string(),
+        };
+        let label = format!("[{}{}]", tab.workflow_name, suffix);
+        let label_w = label.chars().count() as u16;
+        if used_width + label_w > area.width {
+            break;
+        }
+        let style = if app.active_tab == tab_idx {
+            Style::default().add_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(label, style));
+        used_width += label_w;
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Returns a centered `Rect` of the given dimensions inside `area`.

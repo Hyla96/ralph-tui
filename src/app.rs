@@ -13,7 +13,7 @@ use vt100::Parser as VtParser;
 use crate::ralph::runner::RunnerEvent;
 use crate::ralph::store::Store;
 use crate::ralph::watcher::{Watcher, WatcherEvent};
-use crate::ralph::workflow::Workflow;
+use crate::ralph::workflow::{Task, Workflow};
 
 // Maximum number of ralph loop iterations before the loop stops automatically.
 // TODO: make configurable
@@ -48,6 +48,10 @@ pub struct RunnerTab {
     pub current_task_title: Option<String>,
     /// Number of iterations used for this runner tab (starts at 1, incremented by spawn_next_iteration).
     pub iterations_used: u32,
+    /// Set when the COMPLETE sentinel arrives while auto_continue=true and the process
+    /// is still running.  We kill the process and wait for the Exited event; the done
+    /// block checks this flag to treat the exit as a success and spawn the next iteration.
+    pub complete_pending: bool,
 }
 
 pub enum Dialog {
@@ -74,14 +78,38 @@ pub enum PrdEditorField {
     Description,
 }
 
-/// In-memory state for the full-screen plan-metadata editor (US-001).
+/// Which top-level section of the PRD editor is active.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrdEditorMode {
+    /// Focus is on the metadata fields (Project, Branch, Description).
+    Metadata,
+    /// Focus is on the story list panel.
+    StoryList,
+    /// Focus is on the story detail form (fully implemented in US-003).
+    StoryDetail,
+}
+
+/// In-memory state for the full-screen plan-metadata editor.
 pub struct PrdEditorState {
     /// Name of the workflow being edited (used to resolve the directory).
     pub workflow_name: String,
     pub project: String,
     pub branch: String,
     pub description: String,
+    /// Which metadata field has focus when mode == Metadata.
     pub focused_field: PrdEditorField,
+    /// Which top-level section of the editor is active.
+    pub mode: PrdEditorMode,
+    /// In-memory copy of all tasks; mutated by story list add/delete.
+    pub stories: Vec<Task>,
+    /// Index of the currently selected story in the story list.
+    /// When mode == StoryDetail, this is the index of the story being edited
+    /// (or None when is_new_story == true).
+    pub selected_story: Option<usize>,
+    /// True when StoryDetail was opened via [a] (new story) rather than Enter.
+    pub is_new_story: bool,
+    /// Some(idx) = delete confirmation prompt is shown for the story at that index.
+    pub confirm_delete: Option<usize>,
     /// Transient error/status shown in the hint line; cleared on next keystroke.
     pub status: Option<String>,
 }
@@ -706,26 +734,38 @@ impl App {
             }
         };
 
+        let selected_story = if workflow.prd.tasks.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         self.prd_editor = Some(PrdEditorState {
             workflow_name: name,
             project: workflow.prd.project.clone(),
             branch: workflow.prd.branch_name.clone(),
             description: workflow.prd.description.clone(),
             focused_field: PrdEditorField::Project,
+            mode: PrdEditorMode::Metadata,
+            stories: workflow.prd.tasks.clone(),
+            selected_story,
+            is_new_story: false,
+            confirm_delete: None,
             status: None,
         });
     }
 
     /// Writes the current editor state back to prd.json.
+    /// Saves project, branch, description, and the full stories list.
     /// On success closes the editor; on error shows the message in the status line.
     fn save_prd_editor(&mut self) {
-        // Clone the values we need before releasing the borrow.
-        let (name, project, branch, description) = match &self.prd_editor {
+        // Clone the values we need before releasing the immutable borrow.
+        let (name, project, branch, description, stories) = match &self.prd_editor {
             Some(e) => (
                 e.workflow_name.clone(),
                 e.project.clone(),
                 e.branch.clone(),
                 e.description.clone(),
+                e.stories.clone(),
             ),
             None => return,
         };
@@ -736,6 +776,7 @@ impl App {
                 workflow.prd.project = project;
                 workflow.prd.branch_name = branch;
                 workflow.prd.description = description;
+                workflow.prd.tasks = stories;
                 match workflow.save(&dir) {
                     Ok(()) => {
                         self.prd_editor = None;
@@ -756,31 +797,106 @@ impl App {
         }
     }
 
-    /// Handles a key event while the PRD metadata editor is open.
+    /// Handles a key event while the PRD editor is open.
+    ///
+    /// Dispatch order:
+    ///   1. Delete confirmation overlay (if active) — consumes all keys.
+    ///   2. Global bindings: Esc (close / go back), Ctrl+S (save).
+    ///   3. Mode-specific handlers: Metadata, StoryList, StoryDetail.
     fn handle_prd_editor_key(&mut self, key: KeyEvent) {
+        // Extract mode and confirm_delete without holding a borrow.
+        let (mode, confirm_delete) = match &self.prd_editor {
+            Some(e) => (e.mode.clone(), e.confirm_delete),
+            None => return,
+        };
+
+        // Delete confirmation overlay: y confirms, anything else cancels.
+        if let Some(del_idx) = confirm_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(editor) = &mut self.prd_editor {
+                        editor.stories.remove(del_idx);
+                        editor.selected_story = if editor.stories.is_empty() {
+                            None
+                        } else {
+                            Some(del_idx.min(editor.stories.len() - 1))
+                        };
+                        editor.confirm_delete = None;
+                        editor.status = None;
+                    }
+                }
+                _ => {
+                    if let Some(editor) = &mut self.prd_editor {
+                        editor.confirm_delete = None;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Global bindings.
         match key.code {
             KeyCode::Esc => {
-                self.prd_editor = None;
+                match mode {
+                    // US-003: Esc from story detail returns to story list without saving.
+                    PrdEditorMode::StoryDetail => {
+                        if let Some(editor) = &mut self.prd_editor {
+                            editor.mode = PrdEditorMode::StoryList;
+                        }
+                    }
+                    // Esc from metadata or story list closes the editor.
+                    PrdEditorMode::Metadata | PrdEditorMode::StoryList => {
+                        self.prd_editor = None;
+                    }
+                }
+                return;
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.save_prd_editor();
+                return;
             }
+            _ => {}
+        }
+
+        // Mode-specific key handling.
+        match mode {
+            PrdEditorMode::Metadata => self.handle_prd_editor_metadata_key(key),
+            PrdEditorMode::StoryList => self.handle_prd_story_list_key(key),
+            PrdEditorMode::StoryDetail => {
+                // Story detail editing is implemented in US-003.
+            }
+        }
+    }
+
+    /// Handles key events when the metadata section (Project / Branch / Description) is active.
+    fn handle_prd_editor_metadata_key(&mut self, key: KeyEvent) {
+        match key.code {
             KeyCode::Tab => {
                 if let Some(editor) = &mut self.prd_editor {
-                    editor.focused_field = match editor.focused_field {
-                        PrdEditorField::Project => PrdEditorField::Branch,
-                        PrdEditorField::Branch => PrdEditorField::Description,
-                        PrdEditorField::Description => PrdEditorField::Project,
-                    };
+                    match editor.focused_field {
+                        PrdEditorField::Project => editor.focused_field = PrdEditorField::Branch,
+                        PrdEditorField::Branch => {
+                            editor.focused_field = PrdEditorField::Description;
+                        }
+                        PrdEditorField::Description => {
+                            // Advance past the last metadata field into the story list.
+                            editor.mode = PrdEditorMode::StoryList;
+                        }
+                    }
                 }
             }
             KeyCode::BackTab => {
                 if let Some(editor) = &mut self.prd_editor {
-                    editor.focused_field = match editor.focused_field {
-                        PrdEditorField::Project => PrdEditorField::Description,
-                        PrdEditorField::Branch => PrdEditorField::Project,
-                        PrdEditorField::Description => PrdEditorField::Branch,
-                    };
+                    match editor.focused_field {
+                        PrdEditorField::Project => {
+                            // Wrap backwards into the story list.
+                            editor.mode = PrdEditorMode::StoryList;
+                        }
+                        PrdEditorField::Branch => editor.focused_field = PrdEditorField::Project,
+                        PrdEditorField::Description => {
+                            editor.focused_field = PrdEditorField::Branch;
+                        }
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -807,6 +923,73 @@ impl App {
                         PrdEditorField::Description => editor.description.push(c),
                     }
                     editor.status = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Handles key events when the story list panel is active.
+    fn handle_prd_story_list_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(editor) = &mut self.prd_editor
+                    && let Some(sel) = editor.selected_story
+                    && sel > 0
+                {
+                    editor.selected_story = Some(sel - 1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(editor) = &mut self.prd_editor {
+                    let len = editor.stories.len();
+                    match editor.selected_story {
+                        Some(sel) if sel + 1 < len => {
+                            editor.selected_story = Some(sel + 1);
+                        }
+                        None if len > 0 => {
+                            editor.selected_story = Some(0);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Open story detail for the selected story (US-003 fills in the form).
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.selected_story.is_some()
+                {
+                    editor.is_new_story = false;
+                    editor.mode = PrdEditorMode::StoryDetail;
+                }
+            }
+            KeyCode::Char('a') => {
+                // Open story detail for a new story (US-003 fills in the form).
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.is_new_story = true;
+                    editor.mode = PrdEditorMode::StoryDetail;
+                }
+            }
+            KeyCode::Char('x') => {
+                // Show delete confirmation for the currently selected story.
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.selected_story.is_some()
+                {
+                    editor.confirm_delete = editor.selected_story;
+                }
+            }
+            KeyCode::Tab => {
+                // Move focus back to the metadata section (wrap to Project).
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.mode = PrdEditorMode::Metadata;
+                    editor.focused_field = PrdEditorField::Project;
+                }
+            }
+            KeyCode::BackTab => {
+                // Move focus back to the metadata section (Description).
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.mode = PrdEditorMode::Metadata;
+                    editor.focused_field = PrdEditorField::Description;
                 }
             }
             _ => {}
@@ -1042,30 +1225,20 @@ impl App {
 
         // Complete signal handling.
         //
-        // Three sub-cases based on (auto_continue, done):
-        //   auto_continue=false (any done): mark Done immediately — original behavior.
-        //   auto_continue=true, done=false: sentinel arrived, process still running;
-        //     decide now — spawn next or mark Done.
-        //   auto_continue=true, done=true: defer all state changes to the done block below
-        //     so the done block can read the Running iteration and run the auto-loop.
+        // Two sub-cases based on (auto_continue, done):
+        //   auto_continue=false: mark Done immediately — original behavior.
+        //   auto_continue=true, done=false: sentinel arrived, process still running.
+        //     Kill the process and set complete_pending so the done block knows to
+        //     treat the subsequent Exited as a success and spawn the next iteration.
+        //   auto_continue=true, done=true: fall through; done block handles everything
+        //     and will see complete=true in is_success.
         if complete {
             let is_auto = self.runner_tabs[tab_idx].auto_continue;
             if is_auto && !done {
-                // Sentinel received; process still running. Decide now.
-                self.load_current_workflow();
-                let workflow_name = self.runner_tabs[tab_idx].workflow_name.clone();
-                let workflow_dir = self.store.workflow_dir(&workflow_name);
-                let tab_workflow = Workflow::load(&workflow_dir).ok();
-                let is_complete = tab_workflow
-                    .as_ref()
-                    .map(|w| w.is_complete())
-                    .unwrap_or(false);
-                if is_complete {
-                    self.runner_tabs[tab_idx].state = RunnerTabState::Done;
-                } else {
-                    // Spawn next immediately; old process will exit on its own.
-                    // Its Exited event goes on the old (now-replaced) channel and is discarded.
-                    self.spawn_next_iteration_at(tab_idx);
+                // Sentinel received; process still running — kill it and wait for Exited.
+                self.runner_tabs[tab_idx].complete_pending = true;
+                if let Some(kill_tx) = self.runner_tabs[tab_idx].runner_kill_tx.take() {
+                    let _ = kill_tx.send(());
                 }
             } else if !is_auto {
                 // Original behavior: mark Done right away.
@@ -1122,11 +1295,15 @@ impl App {
                         .unwrap_or(false);
 
                     let auto_continue = self.runner_tabs[tab_idx].auto_continue;
+                    // Consume the pending flag set when we killed the process after COMPLETE.
+                    let complete_pending = self.runner_tabs[tab_idx].complete_pending;
+                    self.runner_tabs[tab_idx].complete_pending = false;
 
                     if auto_continue {
                         // Sentinel (complete) takes precedence: treat as success regardless of
                         // exit code. Without sentinel, exit code 0 is success.
-                        let is_success = complete || matches!(exited_code, Some(Some(0)));
+                        let is_success =
+                            complete || complete_pending || matches!(exited_code, Some(Some(0)));
 
                         if is_complete {
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
@@ -1253,6 +1430,7 @@ impl App {
             tab.runner_kill_tx = Some(kill_tx);
             tab.stdin_tx = Some(stdin_tx);
             tab.auto_continue = false;
+            tab.complete_pending = false;
             tab.current_task_id = current_task_id;
             tab.current_task_title = current_task_title;
             tab.iterations_used = 1;
@@ -1267,6 +1445,7 @@ impl App {
                 stdin_tx: Some(stdin_tx),
                 log_scroll: 0,
                 auto_continue: false,
+                complete_pending: false,
                 current_task_id,
                 current_task_title,
                 iterations_used: 1,

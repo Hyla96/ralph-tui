@@ -1,5 +1,4 @@
-use crate::app::{App, Dialog, PrdEditorField, PrdEditorState, RunnerTab, RunnerTabState};
-use crate::ralph::workflow::Workflow;
+use crate::app::{App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, RunnerTabState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -194,55 +193,20 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(pseudo_term, layout[0]);
     }
 
-    // Status line: transient messages take left side; task context on right.
-    // Running/Done states: left = keybindings + auto toggle, right = task context.
-    // Error state: left = keybindings (red), no right side.
-    let bar_width = layout[1].width;
-    let task_ctx = runner_tab_context(app, tab);
+    // Status line: transient error message or keybinding hints.
     let status_text = if let Some(msg) = &app.status_message {
-        // Transient status message overrides the left side.
-        let left = msg.as_str();
-        let left_len = left.chars().count();
-        let mut spans = vec![Span::styled(
-            left.to_string(),
-            Style::default().fg(Color::Red),
-        )];
-        if let Some(ctx) = &task_ctx {
-            spans.extend(notification_right_spans(left_len, ctx, bar_width));
-        }
-        Line::from(spans)
+        Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
     } else {
         match &tab.state {
             RunnerTabState::Running { .. } => {
-                let auto_label = if tab.auto_continue {
-                    "[a]uto:ON"
-                } else {
-                    "[a]uto:OFF"
-                };
-                let left = format!("[s]top  {auto_label}  [?]help");
-                let left_len = left.chars().count();
-                let mut spans = vec![Span::raw(left)];
-                if let Some(ctx) = &task_ctx {
-                    spans.extend(notification_right_spans(left_len, ctx, bar_width));
-                }
-                Line::from(spans)
+                let auto_label = if tab.auto_continue { "[a]uto:ON" } else { "[a]uto:OFF" };
+                Line::from(format!("[s]top  {auto_label}  [?]help"))
             }
-            RunnerTabState::Done => {
-                let left = "[x]close  [?]help";
-                let left_len = left.chars().count();
-                let mut spans = vec![Span::raw(left)];
-                if let Some(ctx) = &task_ctx {
-                    spans.extend(notification_right_spans(left_len, ctx, bar_width));
-                }
-                Line::from(spans)
-            }
-            RunnerTabState::Error(_) => {
-                // Error message lives in the terminal output; status bar shows keybindings only.
-                Line::from(Span::styled(
-                    "[x]close  [q]uit  [?]help",
-                    Style::default().fg(Color::Red),
-                ))
-            }
+            RunnerTabState::Done => Line::from("[x]close  [?]help"),
+            RunnerTabState::Error(_) => Line::from(Span::styled(
+                "[x]close  [q]uit  [?]help",
+                Style::default().fg(Color::Red),
+            )),
         }
     };
     frame.render_widget(Paragraph::new(status_text), layout[1]);
@@ -324,39 +288,6 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Builds the right-aligned task context string for a runner tab status bar.
-///
-/// Returns `None` for Error state (no task context shown) or when the workflow
-/// cannot be loaded (should not normally happen). Format:
-///   `"{task_title}  {done}/{total} tasks  iter {n}"`
-/// where `task_title` is truncated to 30 visible chars with a `…` suffix if needed.
-fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
-    let iter_n = match &tab.state {
-        RunnerTabState::Running { iteration } => *iteration,
-        RunnerTabState::Done => tab.iterations_used,
-        RunnerTabState::Error(_) => return None,
-    };
-
-    let task_title = match &tab.current_task_title {
-        Some(t) => {
-            let chars: Vec<char> = t.chars().collect();
-            if chars.len() > 30 {
-                let truncated: String = chars.iter().take(29).collect();
-                format!("{truncated}…")
-            } else {
-                t.clone()
-            }
-        }
-        None => "unknown".to_string(),
-    };
-
-    let workflow_dir = app.store.workflow_dir(&tab.workflow_name);
-    let (done, total) = Workflow::load(&workflow_dir)
-        .map(|w| (w.done_count(), w.total_count()))
-        .unwrap_or((0, 0));
-
-    Some(format!("{task_title}  {done}/{total} tasks  iter {iter_n}"))
-}
 
 /// Builds right-aligned notification spans to append to a status bar line.
 ///
@@ -489,46 +420,56 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
-/// Renders the full-screen PRD metadata editor (US-001).
+/// Renders the full-screen PRD editor.
 ///
-/// Layout (inside the outer border):
-///   Project field     — 3 rows (bordered)
-///   Branch field      — 3 rows (bordered)
-///   Description field — 3 rows (bordered)
-///   spacer            — flexible
-///   hint / status     — 1 row
-///
-/// The focused field's border is highlighted in yellow; a `_` cursor is appended
-/// to its content. Ctrl+S saves; Esc discards.
+/// Dispatches to the appropriate sub-renderer based on the active mode:
+///   - StoryDetail: placeholder panel (to be fleshed out in US-003)
+///   - Metadata / StoryList: three metadata fields + story list below
 fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     let title = format!(" PRD Editor: {} ", editor.workflow_name);
     let outer_block = Block::default().borders(Borders::ALL).title(title);
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
+    match editor.mode {
+        PrdEditorMode::StoryDetail => draw_prd_story_detail(frame, editor, inner_area),
+        PrdEditorMode::Metadata | PrdEditorMode::StoryList => {
+            draw_prd_metadata_and_stories(frame, editor, inner_area);
+        }
+    }
+}
+
+/// Renders the metadata fields (Project / Branch / Description) and the story list below.
+///
+/// Layout (inside the outer border):
+///   Project field   — 3 rows (bordered)
+///   Branch field    — 3 rows (bordered)
+///   Description field — 3 rows (bordered)
+///   Stories list    — flexible (bordered, scrollable)
+///   hint / status   — 1 row
+///
+/// Active section border is highlighted yellow; focused metadata field shows `_` cursor.
+fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Project
             Constraint::Length(3), // Branch
             Constraint::Length(3), // Description
-            Constraint::Min(0),    // spacer
+            Constraint::Min(0),    // Stories list
             Constraint::Length(1), // hint / status
         ])
-        .split(inner_area);
+        .split(area);
 
     let active_style = Style::default().fg(Color::Yellow);
+    let is_metadata = editor.mode == PrdEditorMode::Metadata;
 
     // Project field
-    let focused = editor.focused_field == PrdEditorField::Project;
+    let focused = is_metadata && editor.focused_field == PrdEditorField::Project;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Project")
-        .border_style(if focused {
-            active_style
-        } else {
-            Style::default()
-        });
+        .border_style(if focused { active_style } else { Style::default() });
     let text = if focused {
         format!("{}_", editor.project)
     } else {
@@ -537,15 +478,11 @@ fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     frame.render_widget(Paragraph::new(text).block(block), layout[0]);
 
     // Branch field
-    let focused = editor.focused_field == PrdEditorField::Branch;
+    let focused = is_metadata && editor.focused_field == PrdEditorField::Branch;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Branch")
-        .border_style(if focused {
-            active_style
-        } else {
-            Style::default()
-        });
+        .border_style(if focused { active_style } else { Style::default() });
     let text = if focused {
         format!("{}_", editor.branch)
     } else {
@@ -554,15 +491,11 @@ fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     frame.render_widget(Paragraph::new(text).block(block), layout[1]);
 
     // Description field
-    let focused = editor.focused_field == PrdEditorField::Description;
+    let focused = is_metadata && editor.focused_field == PrdEditorField::Description;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Description")
-        .border_style(if focused {
-            active_style
-        } else {
-            Style::default()
-        });
+        .border_style(if focused { active_style } else { Style::default() });
     let text = if focused {
         format!("{}_", editor.description)
     } else {
@@ -570,11 +503,83 @@ fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     };
     frame.render_widget(Paragraph::new(text).block(block), layout[2]);
 
-    // Hint / status line: show save error in red, otherwise show keybinding hints.
-    let hint = if let Some(err) = &editor.status {
+    // Stories list panel
+    let stories_focused = editor.mode == PrdEditorMode::StoryList;
+    let stories_title = format!("Stories ({})", editor.stories.len());
+    let stories_block = Block::default()
+        .borders(Borders::ALL)
+        .title(stories_title)
+        .border_style(if stories_focused {
+            active_style
+        } else {
+            Style::default()
+        });
+
+    if editor.stories.is_empty() {
+        let msg = Paragraph::new("No stories. Press [a] to add one.").block(stories_block);
+        frame.render_widget(msg, layout[3]);
+    } else {
+        let items: Vec<ListItem> = editor
+            .stories
+            .iter()
+            .enumerate()
+            .map(|(i, story)| {
+                let text = format!("[{}] {}: {}", i + 1, story.id, story.title);
+                ListItem::new(text)
+            })
+            .collect();
+        let list = List::new(items)
+            .block(stories_block)
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let mut list_state = ListState::default().with_selected(editor.selected_story);
+        frame.render_stateful_widget(list, layout[3], &mut list_state);
+    }
+
+    // Hint / status line
+    let hint = if let Some(del_idx) = editor.confirm_delete {
+        let story_id = editor
+            .stories
+            .get(del_idx)
+            .map(|s| s.id.as_str())
+            .unwrap_or("?");
+        Line::from(Span::styled(
+            format!("Delete story {story_id}? [y/N]"),
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if let Some(err) = &editor.status {
         Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+    } else if stories_focused {
+        Line::from(
+            "[↑↓/j/k] navigate  [Enter] edit  [a] add  [x] delete  [Tab] fields  [Ctrl+S] save  [Esc] cancel",
+        )
     } else {
         Line::from("[Tab] next field  [Shift+Tab] prev  [Ctrl+S] save  [Esc] cancel")
     };
     frame.render_widget(Paragraph::new(hint), layout[4]);
+}
+
+/// Placeholder renderer for the story detail form (to be fully implemented in US-003).
+///
+/// Shows the story ID (or "New Story") and a back hint at the bottom.
+fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    let title = if editor.is_new_story {
+        "New Story".to_string()
+    } else {
+        let story_id = editor
+            .selected_story
+            .and_then(|i| editor.stories.get(i))
+            .map(|s| s.id.as_str())
+            .unwrap_or("?");
+        format!("Story: {story_id}")
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
+    frame.render_widget(block, layout[0]);
+
+    let hint = Line::from("[Esc] back to story list  [Ctrl+S] save");
+    frame.render_widget(Paragraph::new(hint), layout[1]);
 }

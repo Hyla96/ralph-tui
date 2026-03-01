@@ -25,3 +25,6 @@ The PRD validation commands (`cargo build` and `cargo clippy -- -D warnings`) ar
 - `#![allow(dead_code)]` in main.rs suppresses lint for scaffold stubs during early stories; remove as modules are wired together.
 - Plans live in `.ralph/plans/<name>/prd.json`. Store and Plan in `src/ralph/` manage all access.
 - serde field renames are per-field (`#[serde(rename = "...")]`) to match the existing camelCase JSON schema.
+- `main()` uses `#[tokio::main]` (multi-threaded runtime); `tokio::spawn` is callable from any sync function transitively called from main. `event::poll(100ms)` in the main loop is acceptable — short blocking, worker threads handle spawned tasks.
+- `clippy::let_underscore_future`: use `drop(tokio::spawn(...))` not `let _ = tokio::spawn(...)` for fire-and-forget tasks.
+- Runner channel drain pattern: collect into a local `Vec` inside the borrow scope, process after releasing the borrow, to avoid simultaneous mutable field borrows.

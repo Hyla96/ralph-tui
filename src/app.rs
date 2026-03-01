@@ -6,10 +6,15 @@ use ratatui::DefaultTerminal;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::oneshot;
 
 use crate::ralph::plan::Plan;
 use crate::ralph::runner::RunnerEvent;
 use crate::ralph::store::Store;
+
+// Maximum number of ralph loop iterations before the loop stops automatically.
+// TODO: make configurable
+const MAX_ITERATIONS: u32 = 10;
 
 pub enum AppState {
     Idle,
@@ -34,6 +39,7 @@ pub struct App {
     pub status_message_expires: Option<Instant>,
     pub log_lines: Vec<String>,
     pub runner_rx: Option<UnboundedReceiver<RunnerEvent>>,
+    pub runner_kill_tx: Option<oneshot::Sender<()>>,
 }
 
 impl App {
@@ -52,6 +58,7 @@ impl App {
             status_message_expires: None,
             log_lines: Vec::new(),
             runner_rx: None,
+            runner_kill_tx: None,
         };
         app.load_current_plan();
         app
@@ -82,6 +89,7 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => self.move_up(),
                     KeyCode::Down | KeyCode::Char('j') => self.move_down(),
                     KeyCode::Char('r') => self.start_runner(),
+                    KeyCode::Char('s') => self.stop_runner(),
                     KeyCode::Char('n') => self.open_new_plan_dialog(),
                     KeyCode::Char('e') => self.edit_current_plan(terminal)?,
                     KeyCode::Char('d') => self.open_delete_plan_dialog(),
@@ -274,6 +282,7 @@ impl App {
         }
         let mut lines = Vec::new();
         let mut done = false;
+        let mut complete = false;
         let mut spawn_error: Option<String> = None;
 
         if let Some(rx) = &mut self.runner_rx {
@@ -281,6 +290,9 @@ impl App {
                 use tokio::sync::mpsc::error::TryRecvError;
                 match rx.try_recv() {
                     Ok(RunnerEvent::Line(line)) => lines.push(line),
+                    Ok(RunnerEvent::Complete) => {
+                        complete = true;
+                    }
                     Ok(RunnerEvent::Exited) => {
                         done = true;
                         break;
@@ -306,15 +318,55 @@ impl App {
             }
         }
 
+        // Complete signal: transition to Complete state and reload plan.
+        if complete {
+            self.app_state = AppState::Complete;
+            self.load_current_plan();
+        }
+
         if done {
             self.runner_rx = None;
-            if matches!(self.app_state, AppState::Running { .. }) {
-                self.app_state = AppState::Idle;
-            }
+            self.runner_kill_tx = None;
+
             if let Some(msg) = spawn_error {
                 self.status_message = Some(msg);
+                // Transition to Idle on spawn error if still Running.
+                if matches!(self.app_state, AppState::Running { .. }) {
+                    self.app_state = AppState::Idle;
+                }
+            } else {
+                // Reload plan from disk — ralph may have updated passes: true.
+                self.load_current_plan();
+
+                // If already Complete, stay Complete; otherwise check iteration limit.
+                if !matches!(self.app_state, AppState::Complete) {
+                    if let AppState::Running { iteration } = self.app_state
+                        && iteration >= MAX_ITERATIONS
+                    {
+                        self.log_lines.push(format!(
+                            "Max iterations ({MAX_ITERATIONS}) reached. Stopping."
+                        ));
+                        if self.log_lines.len() > 1000 {
+                            self.log_lines.remove(0);
+                        }
+                    }
+                    // Transition to Idle if still Running (natural exit or max iterations).
+                    if matches!(self.app_state, AppState::Running { .. }) {
+                        self.app_state = AppState::Idle;
+                    }
+                }
             }
         }
+    }
+
+    fn stop_runner(&mut self) {
+        if !matches!(self.app_state, AppState::Running { .. }) {
+            return;
+        }
+        if let Some(kill_tx) = self.runner_kill_tx.take() {
+            let _ = kill_tx.send(());
+        }
+        self.app_state = AppState::Idle;
     }
 
     fn start_runner(&mut self) {
@@ -336,7 +388,9 @@ impl App {
         let repo_root = self.store.root().to_path_buf();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
         self.runner_rx = Some(rx);
+        self.runner_kill_tx = Some(kill_tx);
         self.app_state = AppState::Running { iteration: 1 };
 
         drop(tokio::spawn(async move {
@@ -370,6 +424,9 @@ impl App {
             let stdout_task = tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
+                    if line.contains("<promise>COMPLETE</promise>") {
+                        let _ = tx_stdout.send(RunnerEvent::Complete);
+                    }
                     if tx_stdout.send(RunnerEvent::Line(line)).is_err() {
                         break;
                     }
@@ -380,13 +437,28 @@ impl App {
             let stderr_task = tokio::spawn(async move {
                 let mut reader = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = reader.next_line().await {
+                    if line.contains("<promise>COMPLETE</promise>") {
+                        let _ = tx_stderr.send(RunnerEvent::Complete);
+                    }
                     if tx_stderr.send(RunnerEvent::Line(line)).is_err() {
                         break;
                     }
                 }
             });
 
-            let _ = child.wait().await;
+            // Wait for child to exit naturally or for a kill signal.
+            // When kill_rx fires, child.wait() future is dropped (borrow released)
+            // before child.kill() is called below — no simultaneous borrow conflict.
+            let was_killed = tokio::select! {
+                _ = child.wait() => false,
+                _ = kill_rx => true,
+            };
+
+            if was_killed {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+
             let _ = stdout_task.await;
             let _ = stderr_task.await;
             let _ = tx.send(RunnerEvent::Exited);

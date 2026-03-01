@@ -1,9 +1,10 @@
-use crate::app::{App, AppState};
+use crate::app::{App, AppState, Dialog};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -83,4 +84,36 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     };
     frame.render_widget(Paragraph::new(status_text), vertical[2]);
+
+    // Render new-plan dialog overlay on top of everything else
+    if let Some(Dialog::NewPlan { input, error }) = &app.dialog {
+        draw_new_plan_dialog(frame, frame.area(), input, error);
+    }
+}
+
+/// Returns a centered `Rect` of the given dimensions inside `area`.
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let actual_width = width.min(area.width);
+    let actual_height = height.min(area.height);
+    Rect::new(x, y, actual_width, actual_height)
+}
+
+fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {
+    // 72 chars wide (2 border + 70 content), 4 rows tall (2 border + 2 content)
+    let dialog_rect = centered_rect(72, 4, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let prompt = format!("New plan name: {}_", input);
+    let lines: Vec<Line> = match error {
+        Some(err) => vec![
+            Line::from(prompt),
+            Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red))),
+        ],
+        None => vec![Line::from(prompt), Line::from("")],
+    };
+
+    let block = Block::default().borders(Borders::ALL).title("New Plan");
+    frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }

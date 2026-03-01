@@ -3,6 +3,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::DefaultTerminal;
 use std::time::Duration;
 
+use crate::ralph::plan::Plan;
 use crate::ralph::store::Store;
 
 pub struct App {
@@ -10,13 +11,16 @@ pub struct App {
     pub store: Store,
     pub plans: Vec<String>,
     pub selected_plan: Option<usize>,
+    pub current_plan: Option<Plan>,
 }
 
 impl App {
     pub fn new(store: Store) -> Self {
         let plans = store.list_plans();
         let selected_plan = if plans.is_empty() { None } else { Some(0) };
-        App { running: true, store, plans, selected_plan }
+        let mut app = App { running: true, store, plans, selected_plan, current_plan: None };
+        app.load_current_plan();
+        app
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -44,12 +48,21 @@ impl App {
         Ok(())
     }
 
+    fn load_current_plan(&mut self) {
+        self.current_plan = self.selected_plan.and_then(|i| {
+            let name = self.plans.get(i)?;
+            let dir = self.store.plan_dir(name);
+            Plan::load(&dir).ok()
+        });
+    }
+
     fn move_up(&mut self) {
         if let Some(i) = self.selected_plan
             && i > 0
         {
             self.selected_plan = Some(i - 1);
         }
+        self.load_current_plan();
     }
 
     fn move_down(&mut self) {
@@ -58,5 +71,6 @@ impl App {
         {
             self.selected_plan = Some(i + 1);
         }
+        self.load_current_plan();
     }
 }

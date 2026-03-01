@@ -1,6 +1,9 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::DefaultTerminal;
+use std::io::stdout;
 use std::time::Duration;
 
 use crate::ralph::plan::Plan;
@@ -24,6 +27,7 @@ pub struct App {
     pub current_plan: Option<Plan>,
     pub app_state: AppState,
     pub dialog: Option<Dialog>,
+    pub status_message: Option<String>,
 }
 
 impl App {
@@ -38,6 +42,7 @@ impl App {
             current_plan: None,
             app_state: AppState::Idle,
             dialog: None,
+            status_message: None,
         };
         app.load_current_plan();
         app
@@ -46,12 +51,12 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
-            self.handle_events()?;
+            self.handle_events(terminal)?;
         }
         Ok(())
     }
 
-    fn handle_events(&mut self) -> Result<()> {
+    fn handle_events(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
         {
@@ -66,10 +71,50 @@ impl App {
                     KeyCode::Up | KeyCode::Char('k') => self.move_up(),
                     KeyCode::Down | KeyCode::Char('j') => self.move_down(),
                     KeyCode::Char('n') => self.open_new_plan_dialog(),
+                    KeyCode::Char('e') => self.edit_current_plan(terminal)?,
                     _ => {}
                 }
             }
         }
+        Ok(())
+    }
+
+    fn edit_current_plan(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let Some(idx) = self.selected_plan else {
+            return Ok(());
+        };
+        let Some(name) = self.plans.get(idx).cloned() else {
+            return Ok(());
+        };
+
+        let prd_path = self.store.plan_dir(&name).join("prd.json");
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+
+        // Suspend TUI: disable raw mode and leave alternate screen.
+        ratatui::restore();
+
+        let spawn_result = std::process::Command::new(&editor).arg(&prd_path).status();
+
+        // Re-enable raw mode and enter alternate screen.
+        enable_raw_mode()?;
+        execute!(stdout(), EnterAlternateScreen)?;
+        terminal.clear()?;
+
+        match spawn_result {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.status_message = Some(format!("editor not found: {editor}"));
+            }
+            Err(e) => {
+                self.status_message = Some(e.to_string());
+            }
+            Ok(_) => {
+                self.status_message = None;
+            }
+        }
+
+        // Reload plan from disk so updated stories are immediately visible.
+        self.load_current_plan();
+
         Ok(())
     }
 

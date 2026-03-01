@@ -48,3 +48,7 @@ fmt-check:
 # Remove build artifacts
 clean:
     cargo clean
+
+# Copy agents and skills into ~/.claude
+set-resources:
+    cp -rf ./resources/ ~/.claude/

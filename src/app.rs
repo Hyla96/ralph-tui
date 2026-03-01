@@ -24,8 +24,8 @@ pub enum AppState {
 }
 
 pub enum Dialog {
-    NewPlan { input: String, error: Option<String> },
-    DeletePlan { name: String },
+    NewWorkflow { input: String, error: Option<String> },
+    DeleteWorkflow { name: String },
     ContinuePrompt { next_id: String, next_title: String },
     Help,
 }
@@ -42,7 +42,7 @@ async fn runner_task(
     use tokio::io::AsyncBufReadExt;
 
     let mut child = match tokio::process::Command::new("claude")
-        .args(["--agent", "ralph", "Implement the next user story."])
+        .args(["--agent", "ralph", "Implement the next task."])
         .current_dir(&repo_root)
         .env("RALPH_PLAN_DIR", &plan_dir)
         .stdout(Stdio::piped())
@@ -180,9 +180,9 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') => self.move_down(),
                     KeyCode::Char('r') => self.start_runner(),
                     KeyCode::Char('s') => self.stop_runner(),
-                    KeyCode::Char('n') => self.open_new_plan_dialog(),
+                    KeyCode::Char('n') => self.open_new_workflow_dialog(),
                     KeyCode::Char('e') => self.edit_current_plan(terminal)?,
-                    KeyCode::Char('d') => self.open_delete_plan_dialog(),
+                    KeyCode::Char('d') => self.open_delete_workflow_dialog(),
                     KeyCode::Char('?') => self.open_help_dialog(),
                     _ => {}
                 }
@@ -251,8 +251,8 @@ impl App {
             return;
         }
 
-        // DeletePlan confirmation: y confirms, any other key cancels.
-        if let Some(Dialog::DeletePlan { name }) = &self.dialog {
+        // DeleteWorkflow confirmation: y confirms, any other key cancels.
+        if let Some(Dialog::DeleteWorkflow { name }) = &self.dialog {
             let name = name.clone();
             let old_idx = self.selected_workflow;
             self.dialog = None;
@@ -269,13 +269,13 @@ impl App {
                 self.dialog = None;
             }
             KeyCode::Backspace => {
-                if let Some(Dialog::NewPlan { input, error }) = &mut self.dialog {
+                if let Some(Dialog::NewWorkflow { input, error }) = &mut self.dialog {
                     input.pop();
                     *error = None;
                 }
             }
             KeyCode::Char(c) if c.is_ascii_alphanumeric() || c == '-' => {
-                if let Some(Dialog::NewPlan { input, error }) = &mut self.dialog {
+                if let Some(Dialog::NewWorkflow { input, error }) = &mut self.dialog {
                     input.push(c);
                     *error = None;
                 }
@@ -283,11 +283,11 @@ impl App {
             KeyCode::Enter => {
                 // Clone input before releasing the borrow so we can call store methods.
                 let input = match &self.dialog {
-                    Some(Dialog::NewPlan { input, .. }) => input.clone(),
+                    Some(Dialog::NewWorkflow { input, .. }) => input.clone(),
                     _ => return,
                 };
                 if !Store::is_valid_name(&input) {
-                    if let Some(Dialog::NewPlan { error, .. }) = &mut self.dialog {
+                    if let Some(Dialog::NewWorkflow { error, .. }) = &mut self.dialog {
                         *error = Some(
                             "Invalid name — use lowercase letters, digits, hyphens (3–64 chars)"
                                 .to_string(),
@@ -302,7 +302,7 @@ impl App {
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        if let Some(Dialog::NewPlan { error, .. }) = &mut self.dialog {
+                        if let Some(Dialog::NewWorkflow { error, .. }) = &mut self.dialog {
                             *error = if msg.contains("already exists") {
                                 Some("Workflow already exists".to_string())
                             } else {
@@ -320,21 +320,21 @@ impl App {
         self.dialog = Some(Dialog::Help);
     }
 
-    fn open_new_plan_dialog(&mut self) {
-        self.dialog = Some(Dialog::NewPlan {
+    fn open_new_workflow_dialog(&mut self) {
+        self.dialog = Some(Dialog::NewWorkflow {
             input: String::new(),
             error: None,
         });
     }
 
-    fn open_delete_plan_dialog(&mut self) {
+    fn open_delete_workflow_dialog(&mut self) {
         let Some(idx) = self.selected_workflow else {
             return;
         };
         let Some(name) = self.workflows.get(idx).cloned() else {
             return;
         };
-        self.dialog = Some(Dialog::DeletePlan { name });
+        self.dialog = Some(Dialog::DeleteWorkflow { name });
     }
 
     fn refresh_workflows_after_delete(&mut self, old_idx: Option<usize>) {

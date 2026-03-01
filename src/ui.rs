@@ -25,12 +25,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(vertical[0]);
 
     // Workflows panel
-    let plans_title = format!("Plans ({})", app.workflows.len());
+    let plans_title = format!("Workflows ({})", app.workflows.len());
     let plans_block = Block::default().borders(Borders::ALL).title(plans_title);
 
     if app.workflows.is_empty() {
         let empty_msg =
-            Paragraph::new("No plans. Press [n] to create one.").block(plans_block);
+            Paragraph::new("No workflows. Press [n] to create one.").block(plans_block);
         frame.render_widget(empty_msg, top[0]);
     } else {
         let items: Vec<ListItem> =
@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match &app.current_workflow {
         None => {
             let block = Block::default().borders(Borders::ALL).title("Tasks");
-            frame.render_widget(Paragraph::new("Select a plan").block(block), top[1]);
+            frame.render_widget(Paragraph::new("Select a workflow").block(block), top[1]);
         }
         Some(workflow) => {
             let title = format!("Tasks ({}/{})", workflow.done_count(), workflow.total_count());
@@ -107,11 +107,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     // Render dialog overlays on top of everything else
     match &app.dialog {
-        Some(Dialog::NewPlan { input, error }) => {
-            draw_new_plan_dialog(frame, frame.area(), input, error);
+        Some(Dialog::NewWorkflow { input, error }) => {
+            draw_new_workflow_dialog(frame, frame.area(), input, error);
         }
-        Some(Dialog::DeletePlan { name }) => {
-            draw_delete_plan_dialog(frame, frame.area(), name);
+        Some(Dialog::DeleteWorkflow { name }) => {
+            draw_delete_workflow_dialog(frame, frame.area(), name);
         }
         Some(Dialog::ContinuePrompt { next_id, next_title }) => {
             draw_continue_prompt_dialog(frame, frame.area(), next_id, next_title);
@@ -132,13 +132,13 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, actual_width, actual_height)
 }
 
-fn draw_delete_plan_dialog(frame: &mut Frame, area: Rect, name: &str) {
+fn draw_delete_workflow_dialog(frame: &mut Frame, area: Rect, name: &str) {
     // 52 chars wide (2 border + content), 3 rows tall (2 border + 1 content line)
     let dialog_rect = centered_rect(52, 3, area);
     frame.render_widget(Clear, dialog_rect);
 
-    let text = format!("Delete plan '{name}'? [y/N]");
-    let block = Block::default().borders(Borders::ALL).title("Delete Plan");
+    let text = format!("Delete workflow '{name}'? [y/N]");
+    let block = Block::default().borders(Borders::ALL).title("Delete Workflow");
     frame.render_widget(Paragraph::new(text).block(block), dialog_rect);
 }
 
@@ -160,12 +160,12 @@ fn draw_continue_prompt_dialog(
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
-fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {
+fn draw_new_workflow_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {
     // 72 chars wide (2 border + 70 content), 4 rows tall (2 border + 2 content)
     let dialog_rect = centered_rect(72, 4, area);
     frame.render_widget(Clear, dialog_rect);
 
-    let prompt = format!("New plan name: {}_", input);
+    let prompt = format!("New workflow name: {}_", input);
     let lines: Vec<Line> = match error {
         Some(err) => vec![
             Line::from(prompt),
@@ -174,7 +174,7 @@ fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Opti
         None => vec![Line::from(prompt), Line::from("")],
     };
 
-    let block = Block::default().borders(Borders::ALL).title("New Plan");
+    let block = Block::default().borders(Borders::ALL).title("New Workflow");
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
@@ -184,12 +184,12 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, dialog_rect);
 
     let lines = vec![
-        Line::from("  j/k/\u{2191}\u{2193}   navigate plans"),
+        Line::from("  j/k/\u{2191}\u{2193}   navigate workflows"),
         Line::from("  r         run ralph loop"),
         Line::from("  s         stop loop"),
-        Line::from("  n         new plan"),
+        Line::from("  n         new workflow"),
         Line::from("  e         edit prd.json"),
-        Line::from("  d         delete plan"),
+        Line::from("  d         delete workflow"),
         Line::from("  ?         help"),
         Line::from("  q         quit"),
     ];

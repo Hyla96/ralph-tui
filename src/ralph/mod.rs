@@ -1,3 +1,3 @@
 pub mod store;
-pub mod plan;
+pub mod workflow;
 pub mod runner;

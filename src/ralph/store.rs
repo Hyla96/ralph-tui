@@ -20,52 +20,52 @@ impl Store {
         }
     }
 
-    /// Returns `<repo_root>/.ralph/plans/` as a `PathBuf`.
-    pub fn plans_dir(&self) -> PathBuf {
-        self.root.join(".ralph").join("plans")
+    /// Returns `<repo_root>/.ralph/workflows/` as a `PathBuf`.
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.root.join(".ralph").join("workflows")
     }
 
-    /// Returns `<repo_root>/.ralph/plans/<name>/` as a `PathBuf`.
-    pub fn plan_dir(&self, name: &str) -> PathBuf {
-        self.plans_dir().join(name)
+    /// Returns `<repo_root>/.ralph/workflows/<name>/` as a `PathBuf`.
+    pub fn workflow_dir(&self, name: &str) -> PathBuf {
+        self.workflows_dir().join(name)
     }
 
-    /// Scans `.ralph/plans/` and returns subdirectory names that contain a `prd.json`.
+    /// Scans `.ralph/workflows/` and returns subdirectory names that contain a `prd.json`.
     /// Returns an empty vec if the directory does not exist.
-    pub fn list_plans(&self) -> Vec<String> {
-        let dir = self.plans_dir();
+    pub fn list_workflows(&self) -> Vec<String> {
+        let dir = self.workflows_dir();
         if !dir.exists() {
             return vec![];
         }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return vec![];
         };
-        let mut plans: Vec<String> = entries
+        let mut workflows: Vec<String> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
             .filter(|e| e.path().join("prd.json").exists())
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
-        plans.sort();
-        plans
+        workflows.sort();
+        workflows
     }
 
-    /// Creates `.ralph/plans/<name>/` and writes a starter `prd.json`.
-    /// Returns `Err` if the plan already exists or if name is invalid.
-    pub fn create_plan(&self, name: &str) -> Result<()> {
-        let dir = self.plan_dir(name);
+    /// Creates `.ralph/workflows/<name>/` and writes a starter `prd.json`.
+    /// Returns `Err` if the workflow already exists or if name is invalid.
+    pub fn create_workflow(&self, name: &str) -> Result<()> {
+        let dir = self.workflow_dir(name);
         if dir.exists() {
-            return Err(anyhow!("plan '{}' already exists", name));
+            return Err(anyhow!("workflow '{}' already exists", name));
         }
         std::fs::create_dir_all(&dir)
-            .with_context(|| format!("failed to create plan directory: {}", dir.display()))?;
+            .with_context(|| format!("failed to create workflow directory: {}", dir.display()))?;
 
         let starter = serde_json::json!({
             "project": name,
             "branchName": "",
             "description": "",
             "validationCommands": [],
-            "userStories": []
+            "tasks": []
         });
         let json = serde_json::to_string_pretty(&starter)?;
         std::fs::write(dir.join("prd.json"), json)

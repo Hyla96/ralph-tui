@@ -18,48 +18,48 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    // Top row: Plans (~25%) | Stories (~75%)
+    // Top row: Workflows (~25%) | Tasks (~75%)
     let top = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(vertical[0]);
 
-    // Plans panel
-    let plans_title = format!("Plans ({})", app.plans.len());
+    // Workflows panel
+    let plans_title = format!("Workflows ({})", app.workflows.len());
     let plans_block = Block::default().borders(Borders::ALL).title(plans_title);
 
-    if app.plans.is_empty() {
+    if app.workflows.is_empty() {
         let empty_msg =
-            Paragraph::new("No plans. Press [n] to create one.").block(plans_block);
+            Paragraph::new("No workflows. Press [n] to create one.").block(plans_block);
         frame.render_widget(empty_msg, top[0]);
     } else {
         let items: Vec<ListItem> =
-            app.plans.iter().map(|name| ListItem::new(name.as_str())).collect();
+            app.workflows.iter().map(|name| ListItem::new(name.as_str())).collect();
         let list = List::new(items)
             .block(plans_block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        let mut list_state = ListState::default().with_selected(app.selected_plan);
+        let mut list_state = ListState::default().with_selected(app.selected_workflow);
         frame.render_stateful_widget(list, top[0], &mut list_state);
     }
 
-    // Stories panel
-    match &app.current_plan {
+    // Tasks panel
+    match &app.current_workflow {
         None => {
-            let block = Block::default().borders(Borders::ALL).title("Stories");
-            frame.render_widget(Paragraph::new("Select a plan").block(block), top[1]);
+            let block = Block::default().borders(Borders::ALL).title("Tasks");
+            frame.render_widget(Paragraph::new("Select a workflow").block(block), top[1]);
         }
-        Some(plan) => {
-            let title = format!("Stories ({}/{})", plan.done_count(), plan.total_count());
+        Some(workflow) => {
+            let title = format!("Tasks ({}/{})", workflow.done_count(), workflow.total_count());
             let block = Block::default().borders(Borders::ALL).title(title);
-            let items: Vec<ListItem> = plan
+            let items: Vec<ListItem> = workflow
                 .prd
-                .user_stories
+                .tasks
                 .iter()
-                .map(|story| {
-                    let check = if story.passes { "✓" } else { "○" };
+                .map(|task| {
+                    let check = if task.passes { "✓" } else { "○" };
                     let text =
-                        format!("{} [{}] {}: {}", check, story.priority, story.id, story.title);
-                    let style = if story.passes {
+                        format!("{} [{}] {}: {}", check, task.priority, task.id, task.title);
+                    let style = if task.passes {
                         Style::default().fg(Color::DarkGray)
                     } else {
                         Style::default()
@@ -107,11 +107,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     // Render dialog overlays on top of everything else
     match &app.dialog {
-        Some(Dialog::NewPlan { input, error }) => {
-            draw_new_plan_dialog(frame, frame.area(), input, error);
+        Some(Dialog::NewWorkflow { input, error }) => {
+            draw_new_workflow_dialog(frame, frame.area(), input, error);
         }
-        Some(Dialog::DeletePlan { name }) => {
-            draw_delete_plan_dialog(frame, frame.area(), name);
+        Some(Dialog::DeleteWorkflow { name }) => {
+            draw_delete_workflow_dialog(frame, frame.area(), name);
         }
         Some(Dialog::ContinuePrompt { next_id, next_title }) => {
             draw_continue_prompt_dialog(frame, frame.area(), next_id, next_title);
@@ -132,13 +132,13 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, actual_width, actual_height)
 }
 
-fn draw_delete_plan_dialog(frame: &mut Frame, area: Rect, name: &str) {
+fn draw_delete_workflow_dialog(frame: &mut Frame, area: Rect, name: &str) {
     // 52 chars wide (2 border + content), 3 rows tall (2 border + 1 content line)
     let dialog_rect = centered_rect(52, 3, area);
     frame.render_widget(Clear, dialog_rect);
 
-    let text = format!("Delete plan '{name}'? [y/N]");
-    let block = Block::default().borders(Borders::ALL).title("Delete Plan");
+    let text = format!("Delete workflow '{name}'? [y/N]");
+    let block = Block::default().borders(Borders::ALL).title("Delete Workflow");
     frame.render_widget(Paragraph::new(text).block(block), dialog_rect);
 }
 
@@ -153,19 +153,19 @@ fn draw_continue_prompt_dialog(
     frame.render_widget(Clear, dialog_rect);
 
     let lines = vec![
-        Line::from("Story done. Continue? [Y/n]"),
+        Line::from("Task done. Continue? [Y/n]"),
         Line::from(format!("Next: {next_id}: {next_title}")),
     ];
     let block = Block::default().borders(Borders::ALL).title("Continue?");
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
-fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {
+fn draw_new_workflow_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {
     // 72 chars wide (2 border + 70 content), 4 rows tall (2 border + 2 content)
     let dialog_rect = centered_rect(72, 4, area);
     frame.render_widget(Clear, dialog_rect);
 
-    let prompt = format!("New plan name: {}_", input);
+    let prompt = format!("New workflow name: {}_", input);
     let lines: Vec<Line> = match error {
         Some(err) => vec![
             Line::from(prompt),
@@ -174,7 +174,7 @@ fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Opti
         None => vec![Line::from(prompt), Line::from("")],
     };
 
-    let block = Block::default().borders(Borders::ALL).title("New Plan");
+    let block = Block::default().borders(Borders::ALL).title("New Workflow");
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
@@ -184,12 +184,12 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, dialog_rect);
 
     let lines = vec![
-        Line::from("  j/k/\u{2191}\u{2193}   navigate plans"),
+        Line::from("  j/k/\u{2191}\u{2193}   navigate workflows"),
         Line::from("  r         run ralph loop"),
         Line::from("  s         stop loop"),
-        Line::from("  n         new plan"),
+        Line::from("  n         new workflow"),
         Line::from("  e         edit prd.json"),
-        Line::from("  d         delete plan"),
+        Line::from("  d         delete workflow"),
         Line::from("  ?         help"),
         Line::from("  q         quit"),
     ];

@@ -27,6 +27,7 @@ pub enum Dialog {
     NewPlan { input: String, error: Option<String> },
     DeletePlan { name: String },
     ContinuePrompt { next_id: String, next_title: String },
+    Help,
 }
 
 /// Spawns `claude --agent ralph` and streams output lines back via `tx`.
@@ -147,10 +148,20 @@ impl App {
         while self.running {
             self.check_status_timeout();
             self.drain_runner_channel();
-            terminal.draw(|frame| crate::ui::draw(frame, self))?;
-            self.handle_events(terminal)?;
+            if let Err(e) = terminal.draw(|frame| crate::ui::draw(frame, self)) {
+                self.display_error(e.to_string());
+            }
+            if let Err(e) = self.handle_events(terminal) {
+                self.display_error(e.to_string());
+            }
         }
         Ok(())
+    }
+
+    /// Truncates `msg` to 80 chars and shows it in the status bar.
+    fn display_error(&mut self, msg: String) {
+        let truncated: String = msg.chars().take(80).collect();
+        self.status_message = Some(truncated);
     }
 
     fn handle_events(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -172,6 +183,7 @@ impl App {
                     KeyCode::Char('n') => self.open_new_plan_dialog(),
                     KeyCode::Char('e') => self.edit_current_plan(terminal)?,
                     KeyCode::Char('d') => self.open_delete_plan_dialog(),
+                    KeyCode::Char('?') => self.open_help_dialog(),
                     _ => {}
                 }
             }
@@ -219,6 +231,12 @@ impl App {
     }
 
     fn handle_dialog_key(&mut self, code: KeyCode) {
+        // Help overlay: any key closes it.
+        if matches!(self.dialog, Some(Dialog::Help)) {
+            self.dialog = None;
+            return;
+        }
+
         // ContinuePrompt: Y/Enter continues loop, any other key cancels to Idle.
         if let Some(Dialog::ContinuePrompt { .. }) = &self.dialog {
             self.dialog = None;
@@ -296,6 +314,10 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn open_help_dialog(&mut self) {
+        self.dialog = Some(Dialog::Help);
     }
 
     fn open_new_plan_dialog(&mut self) {

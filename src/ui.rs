@@ -116,6 +116,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::ContinuePrompt { next_id, next_title }) => {
             draw_continue_prompt_dialog(frame, frame.area(), next_id, next_title);
         }
+        Some(Dialog::Help) => {
+            draw_help_dialog(frame, frame.area());
+        }
         None => {}
     }
 }
@@ -172,5 +175,24 @@ fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Opti
     };
 
     let block = Block::default().borders(Borders::ALL).title("New Plan");
+    frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
+}
+
+fn draw_help_dialog(frame: &mut Frame, area: Rect) {
+    // 46 wide (2 border + 44 content), 10 tall (2 border + 8 keybinding rows)
+    let dialog_rect = centered_rect(46, 10, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let lines = vec![
+        Line::from("  j/k/\u{2191}\u{2193}   navigate plans"),
+        Line::from("  r         run ralph loop"),
+        Line::from("  s         stop loop"),
+        Line::from("  n         new plan"),
+        Line::from("  e         edit prd.json"),
+        Line::from("  d         delete plan"),
+        Line::from("  ?         help"),
+        Line::from("  q         quit"),
+    ];
+    let block = Block::default().borders(Borders::ALL).title("Help");
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }

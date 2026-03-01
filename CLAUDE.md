@@ -28,3 +28,6 @@ The PRD validation commands (`cargo build` and `cargo clippy -- -D warnings`) ar
 - `main()` uses `#[tokio::main]` (multi-threaded runtime); `tokio::spawn` is callable from any sync function transitively called from main. `event::poll(100ms)` in the main loop is acceptable — short blocking, worker threads handle spawned tasks.
 - `clippy::let_underscore_future`: use `drop(tokio::spawn(...))` not `let _ = tokio::spawn(...)` for fire-and-forget tasks.
 - Runner channel drain pattern: collect into a local `Vec` inside the borrow scope, process after releasing the borrow, to avoid simultaneous mutable field borrows.
+- `vt100::Parser::new(rows, cols, scrollback_len)` — rows before cols. No resize() method; recreate the parser on resize (screen state is lost).
+- tui-term 0.3.1 requires ratatui 0.30+ (via unicode-width conflict). Always use ratatui ≥ 0.30 with tui-term.
+- Scrollback position lives on the vt100 Screen (`screen_mut().set_scrollback(n)`). Update it in event handlers rather than in draw (draw takes `&App`) so `PseudoTerminal` renders the correct view without needing `&mut App`.

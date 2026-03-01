@@ -23,7 +23,8 @@ Take a PRD (markdown file or text) and convert it to `prd.json` inside a new wor
   "project": "[Project Name]",
   "branchName": "[feature-name-kebab-case]",
   "description": "[Feature description from PRD title/intro]",
-  "userStories": [
+  "validationCommands": ["cargo build", "cargo clippy -- -D warnings"],
+  "tasks": [
     {
       "id": "TASK-001",
       "title": "[Task title]",
@@ -177,7 +178,8 @@ Add ability to mark tasks with different statuses.
   "project": "TaskApp",
   "branchName": "task-status",
   "description": "Task Status Feature - Track task progress with status indicators",
-  "userStories": [
+  "validationCommands": ["cargo build", "cargo clippy -- -D warnings"],
+  "tasks": [
     {
       "id": "US-001",
       "title": "Add status field to tasks table",
@@ -242,9 +244,9 @@ Add ability to mark tasks with different statuses.
 
 ## Output Location
 
-Write `prd.json` to `.ralph/workflows/<feature-name>/prd.json`, where `<feature-name>` matches the `branchName` field in kebab-case.
+Write `prd.json` to `.ralph/workflows/<counter>-<feature-name>/prd.json`, where `<feature-name>` matches the `branchName` field in kebab-case.
 
-Create the directory if it does not exist. Each workflow lives in its own isolated folder — no archiving needed.
+Create the directory if it does not exist. Each workflow lives in its own isolated folder — no archiving needed. Increase the counter for each feature, start from 000.
 
 ---
 

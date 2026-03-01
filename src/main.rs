@@ -9,10 +9,13 @@ use ralph::store::Store;
 
 fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
-    if let Err(e) = Store::find(&cwd) {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    }
+    let store = match Store::find(&cwd) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Restore terminal before printing any panic message.
     let default_hook = std::panic::take_hook();
@@ -22,7 +25,7 @@ fn main() -> Result<()> {
     }));
 
     let mut terminal = ratatui::init();
-    let result = app::App::new().run(&mut terminal);
+    let result = app::App::new(store).run(&mut terminal);
     ratatui::restore();
     result
 }

@@ -73,15 +73,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     frame.render_widget(Block::default().borders(Borders::ALL).title("Log"), vertical[1]);
 
-    // Status bar: no border, content depends on AppState
-    let status_text = match &app.app_state {
-        AppState::Idle => "[r]un  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string(),
-        AppState::Running { iteration } => {
-            format!("[s]top  [q]uit  Running iteration {}/10\u{2026}", iteration)
-        }
-        AppState::Complete => {
-            "COMPLETE  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string()
-        }
+    // Status bar: no border, content depends on AppState (or a status message).
+    let status_text = if let Some(msg) = &app.status_message {
+        Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
+    } else {
+        let hint = match &app.app_state {
+            AppState::Idle => "[r]un  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string(),
+            AppState::Running { iteration } => {
+                format!("[s]top  [q]uit  Running iteration {}/10\u{2026}", iteration)
+            }
+            AppState::Complete => {
+                "COMPLETE  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string()
+            }
+        };
+        Line::from(hint)
     };
     frame.render_widget(Paragraph::new(status_text), vertical[2]);
 

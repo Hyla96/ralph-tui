@@ -113,6 +113,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::DeletePlan { name }) => {
             draw_delete_plan_dialog(frame, frame.area(), name);
         }
+        Some(Dialog::ContinuePrompt { next_id, next_title }) => {
+            draw_continue_prompt_dialog(frame, frame.area(), next_id, next_title);
+        }
         None => {}
     }
 }
@@ -134,6 +137,24 @@ fn draw_delete_plan_dialog(frame: &mut Frame, area: Rect, name: &str) {
     let text = format!("Delete plan '{name}'? [y/N]");
     let block = Block::default().borders(Borders::ALL).title("Delete Plan");
     frame.render_widget(Paragraph::new(text).block(block), dialog_rect);
+}
+
+fn draw_continue_prompt_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    next_id: &str,
+    next_title: &str,
+) {
+    // 70 wide (2 border + 68 content), 4 tall (2 border + 2 content lines)
+    let dialog_rect = centered_rect(70, 4, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let lines = vec![
+        Line::from("Story done. Continue? [Y/n]"),
+        Line::from(format!("Next: {next_id}: {next_title}")),
+    ];
+    let block = Block::default().borders(Borders::ALL).title("Continue?");
+    frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
 fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {

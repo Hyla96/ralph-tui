@@ -2,7 +2,7 @@
 
 A Rust TUI for managing and running [Ralph](https://github.com/anthropics/claude-code) agent loops. Replaces the `scripts/ralph/ralph.sh` and `scripts/ralph/ralph-status.sh` bash scripts with a live terminal dashboard.
 
-> **Status:** In active development. The TUI binary is not yet functional — the data layer is implemented and the UI is being built story by story. The shell scripts in `scripts/ralph/` remain the working implementation until the TUI is complete.
+> **Status:** In active development. The TUI opens, displays plans and story progress, and supports creating new plans. Loop execution ([r]un/[s]top), editing, deletion, and the help overlay are not yet implemented. The shell scripts in `scripts/ralph/` remain the working implementation for running loops.
 
 ---
 
@@ -55,6 +55,17 @@ Plans live inside the repository under `.ralph/plans/`:
 ```
 
 `passes: true` means the story has been implemented and all validation commands passed. The Ralph agent sets this itself before committing.
+
+## Keybindings
+
+| Key | Action |
+|---|---|
+| `j` / `↓` | Move focus down in the plans list |
+| `k` / `↑` | Move focus up in the plans list |
+| `n` | Open "New plan" dialog |
+| `q` | Quit |
+
+Bindings for `r` (run), `s` (stop), `e` (edit), `d` (delete), and `?` (help) are shown in the status bar but are not yet implemented.
 
 ---
 

@@ -7,7 +7,8 @@ mod ui;
 use anyhow::Result;
 use ralph::store::Store;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let store = match Store::find(&cwd) {
         Ok(s) => s,
@@ -25,7 +26,8 @@ fn main() -> Result<()> {
     }));
 
     let mut terminal = ratatui::init();
-    let result = app::App::new(store).run(&mut terminal);
+    let mut app = app::App::new(store);
+    let result = app.run(&mut terminal);
     ratatui::restore();
     result
 }

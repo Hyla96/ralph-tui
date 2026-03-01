@@ -71,7 +71,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame.render_widget(list, top[1]);
         }
     }
-    frame.render_widget(Block::default().borders(Borders::ALL).title("Log"), vertical[1]);
+    // Log panel: render buffered lines; auto-scroll to last line when running.
+    let log_block = Block::default().borders(Borders::ALL).title("Log");
+    if app.log_lines.is_empty() {
+        frame.render_widget(log_block, vertical[1]);
+    } else {
+        let items: Vec<ListItem> =
+            app.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
+        let list = List::new(items).block(log_block);
+        let selected = if matches!(app.app_state, AppState::Running { .. }) {
+            Some(app.log_lines.len().saturating_sub(1))
+        } else {
+            None
+        };
+        let mut log_state = ListState::default().with_selected(selected);
+        frame.render_stateful_widget(list, vertical[1], &mut log_state);
+    }
 
     // Status bar: no border, content depends on AppState (or a status message).
     let status_text = if let Some(msg) = &app.status_message {

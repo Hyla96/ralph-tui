@@ -1,4 +1,6 @@
-use crate::app::{App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, RunnerTabState};
+use crate::app::{
+    App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, RunnerTabState, StoryDetailField,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -558,28 +560,130 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     frame.render_widget(Paragraph::new(hint), layout[4]);
 }
 
-/// Placeholder renderer for the story detail form (to be fully implemented in US-003).
+/// Renders the story detail form (US-003).
 ///
-/// Shows the story ID (or "New Story") and a back hint at the bottom.
+/// Layout (inside the outer border from draw_prd_editor):
+///   ID (60%) + Priority (40%)   — 3 rows, side-by-side
+///   Title                       — 3 rows
+///   Description                 — 3 rows
+///   Acceptance Criteria list    — flexible height
+///   hint / status               — 1 row
+///
+/// Active field border is highlighted yellow. Focused text fields append `_` cursor.
+/// In the Criteria list, the active line is shown with REVERSED highlight and `_` cursor.
 fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(3), // ID + Priority row
+            Constraint::Length(3), // Title
+            Constraint::Length(3), // Description
+            Constraint::Min(0),    // Acceptance Criteria list
+            Constraint::Length(1), // hint / status
+        ])
         .split(area);
 
-    let title = if editor.is_new_story {
-        "New Story".to_string()
-    } else {
-        let story_id = editor
-            .selected_story
-            .and_then(|i| editor.stories.get(i))
-            .map(|s| s.id.as_str())
-            .unwrap_or("?");
-        format!("Story: {story_id}")
-    };
-    let block = Block::default().borders(Borders::ALL).title(title);
-    frame.render_widget(block, layout[0]);
+    let active_style = Style::default().fg(Color::Yellow);
 
-    let hint = Line::from("[Esc] back to story list  [Ctrl+S] save");
-    frame.render_widget(Paragraph::new(hint), layout[1]);
+    // --- First row: ID (left 60%) + Priority (right 40%) ---
+    let top_row = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(layout[0]);
+
+    // ID field
+    let id_focused = editor.story_focused_field == StoryDetailField::Id;
+    let id_block = Block::default()
+        .borders(Borders::ALL)
+        .title("ID")
+        .border_style(if id_focused { active_style } else { Style::default() });
+    let id_text = if id_focused {
+        format!("{}_", editor.story_id)
+    } else {
+        editor.story_id.clone()
+    };
+    frame.render_widget(Paragraph::new(id_text).block(id_block), top_row[0]);
+
+    // Priority field
+    let prio_focused = editor.story_focused_field == StoryDetailField::Priority;
+    let prio_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Priority")
+        .border_style(if prio_focused { active_style } else { Style::default() });
+    let prio_text = if prio_focused {
+        format!("{}_", editor.story_priority)
+    } else {
+        editor.story_priority.clone()
+    };
+    frame.render_widget(Paragraph::new(prio_text).block(prio_block), top_row[1]);
+
+    // --- Title field ---
+    let title_focused = editor.story_focused_field == StoryDetailField::Title;
+    let title_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Title")
+        .border_style(if title_focused { active_style } else { Style::default() });
+    let title_text = if title_focused {
+        format!("{}_", editor.story_title)
+    } else {
+        editor.story_title.clone()
+    };
+    frame.render_widget(Paragraph::new(title_text).block(title_block), layout[1]);
+
+    // --- Description field ---
+    let desc_focused = editor.story_focused_field == StoryDetailField::Description;
+    let desc_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Description")
+        .border_style(if desc_focused { active_style } else { Style::default() });
+    let desc_text = if desc_focused {
+        format!("{}_", editor.story_description)
+    } else {
+        editor.story_description.clone()
+    };
+    frame.render_widget(Paragraph::new(desc_text).block(desc_block), layout[2]);
+
+    // --- Acceptance Criteria list ---
+    let crit_focused = editor.story_focused_field == StoryDetailField::Criteria;
+    let crit_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Acceptance Criteria  [Enter] add  [x] delete  [↑↓] navigate")
+        .border_style(if crit_focused { active_style } else { Style::default() });
+
+    if editor.story_criteria.is_empty() {
+        let msg = if crit_focused {
+            "  (empty — press Enter to add a criterion)"
+        } else {
+            "  (no criteria)"
+        };
+        frame.render_widget(Paragraph::new(msg).block(crit_block), layout[3]);
+    } else {
+        let cursor = editor.story_criteria_cursor;
+        let items: Vec<ListItem> = editor
+            .story_criteria
+            .iter()
+            .enumerate()
+            .map(|(i, crit)| {
+                if crit_focused && i == cursor {
+                    ListItem::new(format!("{crit}_"))
+                } else {
+                    ListItem::new(crit.as_str())
+                }
+            })
+            .collect();
+        let list = List::new(items)
+            .block(crit_block)
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let mut list_state = ListState::default()
+            .with_selected(if crit_focused { Some(cursor) } else { None });
+        frame.render_stateful_widget(list, layout[3], &mut list_state);
+    }
+
+    // --- Hint / status line ---
+    let hint = if let Some(err) = &editor.status {
+        Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red)))
+    } else {
+        Line::from("[Tab] next field  [Shift+Tab] prev  [Ctrl+S] save  [Esc] back")
+    };
+    frame.render_widget(Paragraph::new(hint), layout[4]);
 }

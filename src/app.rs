@@ -78,6 +78,16 @@ pub enum PrdEditorField {
     Description,
 }
 
+/// Which field of the story detail form currently has focus.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoryDetailField {
+    Id,
+    Title,
+    Description,
+    Priority,
+    Criteria,
+}
+
 /// Which top-level section of the PRD editor is active.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrdEditorMode {
@@ -112,6 +122,17 @@ pub struct PrdEditorState {
     pub confirm_delete: Option<usize>,
     /// Transient error/status shown in the hint line; cleared on next keystroke.
     pub status: Option<String>,
+    // Story detail editing fields (valid when mode == StoryDetail; populated on entry).
+    pub story_id: String,
+    pub story_title: String,
+    pub story_description: String,
+    pub story_priority: String,
+    /// One string per criterion; may be empty when criteria list is empty.
+    pub story_criteria: Vec<String>,
+    /// Index of the currently active criterion line (within story_criteria).
+    pub story_criteria_cursor: usize,
+    /// Which field of the story detail form has focus.
+    pub story_focused_field: StoryDetailField,
 }
 
 /// Spawns `claude --agent ralph` inside a PTY and streams output lines back via `tx`.
@@ -756,6 +777,14 @@ impl App {
             is_new_story: false,
             confirm_delete: None,
             status: None,
+            // Story detail fields — populated when entering StoryDetail mode.
+            story_id: String::new(),
+            story_title: String::new(),
+            story_description: String::new(),
+            story_priority: String::new(),
+            story_criteria: Vec::new(),
+            story_criteria_cursor: 0,
+            story_focused_field: StoryDetailField::Id,
         });
     }
 
@@ -857,7 +886,11 @@ impl App {
                 return;
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.save_prd_editor();
+                if mode == PrdEditorMode::StoryDetail {
+                    self.save_story_detail();
+                } else {
+                    self.save_prd_editor();
+                }
                 return;
             }
             _ => {}
@@ -867,9 +900,7 @@ impl App {
         match mode {
             PrdEditorMode::Metadata => self.handle_prd_editor_metadata_key(key),
             PrdEditorMode::StoryList => self.handle_prd_story_list_key(key),
-            PrdEditorMode::StoryDetail => {
-                // Story detail editing is implemented in US-003.
-            }
+            PrdEditorMode::StoryDetail => self.handle_prd_story_detail_key(key),
         }
     }
 
@@ -960,19 +991,41 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                // Open story detail for the selected story (US-003 fills in the form).
+                // Populate story detail fields from the selected story and enter StoryDetail mode.
                 if let Some(editor) = &mut self.prd_editor
-                    && editor.selected_story.is_some()
+                    && let Some(sel) = editor.selected_story
+                    && let Some(story) = editor.stories.get(sel).cloned()
                 {
+                    editor.story_id = story.id;
+                    editor.story_title = story.title;
+                    editor.story_description = story.description;
+                    editor.story_priority = story.priority.to_string();
+                    editor.story_criteria = if story.acceptance_criteria.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        story.acceptance_criteria
+                    };
+                    editor.story_criteria_cursor = 0;
+                    editor.story_focused_field = StoryDetailField::Id;
                     editor.is_new_story = false;
                     editor.mode = PrdEditorMode::StoryDetail;
+                    editor.status = None;
                 }
             }
             KeyCode::Char('a') => {
-                // Open story detail for a new story (US-003 fills in the form).
+                // Open an empty story detail form for a new story.
                 if let Some(editor) = &mut self.prd_editor {
+                    let next_num = editor.stories.len() + 1;
+                    editor.story_id = format!("US-{next_num:03}");
+                    editor.story_title = String::new();
+                    editor.story_description = String::new();
+                    editor.story_priority = next_num.to_string();
+                    editor.story_criteria = vec![String::new()];
+                    editor.story_criteria_cursor = 0;
+                    editor.story_focused_field = StoryDetailField::Id;
                     editor.is_new_story = true;
                     editor.mode = PrdEditorMode::StoryDetail;
+                    editor.status = None;
                 }
             }
             KeyCode::Char('x') => {
@@ -998,6 +1051,227 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Handles key events when the story detail form is active.
+    ///
+    /// Field order (Tab): Id → Title → Description → Priority → Criteria → Id (wrap).
+    /// BackTab reverses the order. Within the Criteria list, Up/Down move between lines,
+    /// Enter inserts a new line below the cursor, and x deletes the focused line.
+    fn handle_prd_story_detail_key(&mut self, key: KeyEvent) {
+        // Clone focused field to avoid holding the borrow during the match.
+        let focused = match &self.prd_editor {
+            Some(e) => e.story_focused_field.clone(),
+            None => return,
+        };
+
+        match key.code {
+            KeyCode::Tab => {
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.story_focused_field = match editor.story_focused_field {
+                        StoryDetailField::Id => StoryDetailField::Title,
+                        StoryDetailField::Title => StoryDetailField::Description,
+                        StoryDetailField::Description => StoryDetailField::Priority,
+                        StoryDetailField::Priority => StoryDetailField::Criteria,
+                        StoryDetailField::Criteria => StoryDetailField::Id,
+                    };
+                }
+            }
+            KeyCode::BackTab => {
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.story_focused_field = match editor.story_focused_field {
+                        StoryDetailField::Id => StoryDetailField::Criteria,
+                        StoryDetailField::Title => StoryDetailField::Id,
+                        StoryDetailField::Description => StoryDetailField::Title,
+                        StoryDetailField::Priority => StoryDetailField::Description,
+                        StoryDetailField::Criteria => StoryDetailField::Priority,
+                    };
+                }
+            }
+            KeyCode::Up if focused == StoryDetailField::Criteria => {
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.story_criteria_cursor > 0
+                {
+                    editor.story_criteria_cursor -= 1;
+                }
+            }
+            KeyCode::Down if focused == StoryDetailField::Criteria => {
+                if let Some(editor) = &mut self.prd_editor {
+                    let max = editor.story_criteria.len().saturating_sub(1);
+                    if editor.story_criteria_cursor < max {
+                        editor.story_criteria_cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Enter if focused == StoryDetailField::Criteria => {
+                if let Some(editor) = &mut self.prd_editor {
+                    if editor.story_criteria.is_empty() {
+                        editor.story_criteria.push(String::new());
+                        editor.story_criteria_cursor = 0;
+                    } else {
+                        let cursor = editor.story_criteria_cursor;
+                        editor.story_criteria.insert(cursor + 1, String::new());
+                        editor.story_criteria_cursor = cursor + 1;
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(editor) = &mut self.prd_editor {
+                    match editor.story_focused_field {
+                        StoryDetailField::Id => {
+                            editor.story_id.pop();
+                        }
+                        StoryDetailField::Title => {
+                            editor.story_title.pop();
+                        }
+                        StoryDetailField::Description => {
+                            editor.story_description.pop();
+                        }
+                        StoryDetailField::Priority => {
+                            editor.story_priority.pop();
+                        }
+                        StoryDetailField::Criteria => {
+                            let cursor = editor.story_criteria_cursor;
+                            if let Some(line) = editor.story_criteria.get_mut(cursor) {
+                                line.pop();
+                            }
+                        }
+                    }
+                    editor.status = None;
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(editor) = &mut self.prd_editor {
+                    // x in the Criteria field deletes the focused criterion line.
+                    if c == 'x'
+                        && editor.story_focused_field == StoryDetailField::Criteria
+                        && !editor.story_criteria.is_empty()
+                    {
+                        let cursor = editor.story_criteria_cursor;
+                        editor.story_criteria.remove(cursor);
+                        editor.story_criteria_cursor = if editor.story_criteria.is_empty() {
+                            0
+                        } else {
+                            cursor.min(editor.story_criteria.len() - 1)
+                        };
+                    } else {
+                        match editor.story_focused_field {
+                            StoryDetailField::Id => editor.story_id.push(c),
+                            StoryDetailField::Title => editor.story_title.push(c),
+                            StoryDetailField::Description => editor.story_description.push(c),
+                            StoryDetailField::Priority => editor.story_priority.push(c),
+                            StoryDetailField::Criteria => {
+                                if editor.story_criteria.is_empty() {
+                                    editor.story_criteria.push(c.to_string());
+                                } else {
+                                    let cursor = editor.story_criteria_cursor;
+                                    if let Some(line) = editor.story_criteria.get_mut(cursor) {
+                                        line.push(c);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    editor.status = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Saves the story detail form back into the in-memory story list, then persists
+    /// the full plan (metadata + all stories) to prd.json.  Returns to StoryList mode
+    /// on success; shows an error in the hint line on failure.
+    fn save_story_detail(&mut self) {
+        // Build the Task from story detail fields (clone to release the borrow).
+        let (workflow_name, task, project, branch, description, is_new, selected_idx) = {
+            let editor = match &self.prd_editor {
+                Some(e) => e,
+                None => return,
+            };
+            let priority = editor.story_priority.parse::<u32>().unwrap_or(1);
+            // Drop empty criterion lines before saving.
+            let criteria: Vec<String> = editor
+                .story_criteria
+                .iter()
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .collect();
+            // Preserve passes / notes from the original story when editing.
+            let (passes, notes) = if editor.is_new_story {
+                (false, String::new())
+            } else {
+                editor
+                    .selected_story
+                    .and_then(|i| editor.stories.get(i))
+                    .map(|s| (s.passes, s.notes.clone()))
+                    .unwrap_or((false, String::new()))
+            };
+            let task = Task {
+                id: editor.story_id.clone(),
+                title: editor.story_title.clone(),
+                description: editor.story_description.clone(),
+                acceptance_criteria: criteria,
+                priority,
+                passes,
+                notes,
+            };
+            (
+                editor.workflow_name.clone(),
+                task,
+                editor.project.clone(),
+                editor.branch.clone(),
+                editor.description.clone(),
+                editor.is_new_story,
+                editor.selected_story,
+            )
+        };
+
+        // Update the in-memory story list and switch back to StoryList mode.
+        if let Some(editor) = &mut self.prd_editor {
+            if is_new {
+                editor.stories.push(task.clone());
+                let new_idx = editor.stories.len() - 1;
+                editor.selected_story = Some(new_idx);
+            } else if let Some(idx) = selected_idx
+                && let Some(existing) = editor.stories.get_mut(idx)
+            {
+                *existing = task.clone();
+            }
+            editor.mode = PrdEditorMode::StoryList;
+            editor.status = None;
+        }
+
+        // Persist updated metadata + stories to disk.
+        let updated_stories = match &self.prd_editor {
+            Some(e) => e.stories.clone(),
+            None => return,
+        };
+
+        let dir = self.store.workflow_dir(&workflow_name);
+        match Workflow::load(&dir) {
+            Ok(mut workflow) => {
+                workflow.prd.project = project;
+                workflow.prd.branch_name = branch;
+                workflow.prd.description = description;
+                workflow.prd.tasks = updated_stories;
+                match workflow.save(&dir) {
+                    Ok(()) => {
+                        self.load_current_workflow();
+                    }
+                    Err(e) => {
+                        if let Some(editor) = &mut self.prd_editor {
+                            editor.status = Some(format!("Save failed: {e}"));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(editor) = &mut self.prd_editor {
+                    editor.status = Some(format!("Load failed: {e}"));
+                }
+            }
         }
     }
 

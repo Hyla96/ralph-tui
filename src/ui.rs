@@ -90,9 +90,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(Paragraph::new(status_text), vertical[2]);
 
-    // Render new-plan dialog overlay on top of everything else
-    if let Some(Dialog::NewPlan { input, error }) = &app.dialog {
-        draw_new_plan_dialog(frame, frame.area(), input, error);
+    // Render dialog overlays on top of everything else
+    match &app.dialog {
+        Some(Dialog::NewPlan { input, error }) => {
+            draw_new_plan_dialog(frame, frame.area(), input, error);
+        }
+        Some(Dialog::DeletePlan { name }) => {
+            draw_delete_plan_dialog(frame, frame.area(), name);
+        }
+        None => {}
     }
 }
 
@@ -103,6 +109,16 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let actual_width = width.min(area.width);
     let actual_height = height.min(area.height);
     Rect::new(x, y, actual_width, actual_height)
+}
+
+fn draw_delete_plan_dialog(frame: &mut Frame, area: Rect, name: &str) {
+    // 52 chars wide (2 border + content), 3 rows tall (2 border + 1 content line)
+    let dialog_rect = centered_rect(52, 3, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let text = format!("Delete plan '{name}'? [y/N]");
+    let block = Block::default().borders(Borders::ALL).title("Delete Plan");
+    frame.render_widget(Paragraph::new(text).block(block), dialog_rect);
 }
 
 fn draw_new_plan_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {

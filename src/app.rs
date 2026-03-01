@@ -17,6 +17,7 @@ pub enum AppState {
 
 pub enum Dialog {
     NewPlan { input: String, error: Option<String> },
+    DeletePlan { name: String },
 }
 
 pub struct App {
@@ -72,6 +73,7 @@ impl App {
                     KeyCode::Down | KeyCode::Char('j') => self.move_down(),
                     KeyCode::Char('n') => self.open_new_plan_dialog(),
                     KeyCode::Char('e') => self.edit_current_plan(terminal)?,
+                    KeyCode::Char('d') => self.open_delete_plan_dialog(),
                     _ => {}
                 }
             }
@@ -119,6 +121,19 @@ impl App {
     }
 
     fn handle_dialog_key(&mut self, code: KeyCode) {
+        // DeletePlan confirmation: y confirms, any other key cancels.
+        if let Some(Dialog::DeletePlan { name }) = &self.dialog {
+            let name = name.clone();
+            let old_idx = self.selected_plan;
+            self.dialog = None;
+            if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
+                let dir = self.store.plan_dir(&name);
+                let _ = std::fs::remove_dir_all(dir);
+                self.refresh_plans_after_delete(old_idx);
+            }
+            return;
+        }
+
         match code {
             KeyCode::Esc => {
                 self.dialog = None;
@@ -176,6 +191,26 @@ impl App {
             input: String::new(),
             error: None,
         });
+    }
+
+    fn open_delete_plan_dialog(&mut self) {
+        let Some(idx) = self.selected_plan else {
+            return;
+        };
+        let Some(name) = self.plans.get(idx).cloned() else {
+            return;
+        };
+        self.dialog = Some(Dialog::DeletePlan { name });
+    }
+
+    fn refresh_plans_after_delete(&mut self, old_idx: Option<usize>) {
+        self.plans = self.store.list_plans();
+        self.selected_plan = if self.plans.is_empty() {
+            None
+        } else {
+            Some(old_idx.map(|i| i.min(self.plans.len() - 1)).unwrap_or(0))
+        };
+        self.load_current_plan();
     }
 
     fn refresh_plans_and_focus(&mut self, name: &str) {

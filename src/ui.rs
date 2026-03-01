@@ -1,4 +1,4 @@
-use crate::app::{App, AppState, Dialog};
+use crate::app::{App, Dialog, RunnerTab, RunnerTabState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -71,35 +71,53 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame.render_widget(list, top[1]);
         }
     }
-    // Log panel: render buffered lines; auto-scroll to last line when running.
-    let log_block = Block::default().borders(Borders::ALL).title("Log");
-    if app.log_lines.is_empty() {
-        frame.render_widget(log_block, vertical[1]);
+
+    // Log panel: show log lines from the active runner tab; empty when on Workflows tab.
+    let active_runner: Option<&RunnerTab> = if app.active_tab > 0 {
+        app.runner_tabs.get(app.active_tab - 1)
     } else {
-        let items: Vec<ListItem> =
-            app.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
-        let list = List::new(items).block(log_block);
-        let selected = if matches!(app.app_state, AppState::Running { .. }) {
-            Some(app.log_lines.len().saturating_sub(1))
-        } else {
-            None
-        };
-        let mut log_state = ListState::default().with_selected(selected);
-        frame.render_stateful_widget(list, vertical[1], &mut log_state);
+        None
+    };
+
+    let log_block = Block::default().borders(Borders::ALL).title("Log");
+    match active_runner {
+        None => {
+            frame.render_widget(log_block, vertical[1]);
+        }
+        Some(tab) if tab.log_lines.is_empty() => {
+            frame.render_widget(log_block, vertical[1]);
+        }
+        Some(tab) => {
+            let items: Vec<ListItem> =
+                tab.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
+            let list = List::new(items).block(log_block);
+            let selected = if matches!(tab.state, RunnerTabState::Running { .. }) {
+                Some(tab.log_lines.len().saturating_sub(1))
+            } else {
+                None
+            };
+            let mut log_state = ListState::default().with_selected(selected);
+            frame.render_stateful_widget(list, vertical[1], &mut log_state);
+        }
     }
 
-    // Status bar: no border, content depends on AppState (or a status message).
+    // Status bar: no border, content depends on active tab and runner state.
     let status_text = if let Some(msg) = &app.status_message {
         Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
     } else {
-        let hint = match &app.app_state {
-            AppState::Idle => "[r]un  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string(),
-            AppState::Running { iteration } => {
-                format!("[s]top  [q]uit  Running iteration {}/10\u{2026}", iteration)
-            }
-            AppState::Complete => {
-                "COMPLETE  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string()
-            }
+        let hint = match active_runner {
+            None => "[r]un  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string(),
+            Some(tab) => match &tab.state {
+                RunnerTabState::Running { iteration } => {
+                    format!("[s]top  [q]uit  Running iteration {}/10\u{2026}", iteration)
+                }
+                RunnerTabState::Done => {
+                    "Done  [n]ew  [e]dit  [d]elete  [?]help  [q]uit".to_string()
+                }
+                RunnerTabState::Error(msg) => {
+                    format!("Error: {}  [q]uit", msg)
+                }
+            },
         };
         Line::from(hint)
     };

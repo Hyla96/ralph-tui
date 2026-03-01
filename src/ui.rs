@@ -150,7 +150,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         let last = tab.log_lines.len() - 1;
         let selected = last.saturating_sub(tab.log_scroll);
         let items: Vec<ListItem> =
-            tab.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
+            tab.log_lines.iter().map(|l| ListItem::new(l.clone())).collect();
         let list = List::new(items).block(log_block);
         let mut log_state = ListState::default().with_selected(Some(selected));
         frame.render_stateful_widget(list, layout[0], &mut log_state);

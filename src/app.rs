@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use ratatui::text::Line;
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::DefaultTerminal;
@@ -28,7 +29,7 @@ pub enum RunnerTabState {
 pub struct RunnerTab {
     pub workflow_name: String,
     /// Capped at 1000 lines; oldest lines are dropped when the cap is exceeded.
-    pub log_lines: Vec<String>,
+    pub log_lines: Vec<Line<'static>>,
     pub state: RunnerTabState,
     pub runner_rx: Option<UnboundedReceiver<RunnerEvent>>,
     pub runner_kill_tx: Option<oneshot::Sender<()>>,
@@ -40,11 +41,23 @@ pub struct RunnerTab {
 }
 
 impl RunnerTab {
-    fn push_log(&mut self, line: String) {
+    fn push_log(&mut self, line: Line<'static>) {
         self.log_lines.push(line);
         if self.log_lines.len() > 1000 {
             self.log_lines.remove(0);
         }
+    }
+}
+
+/// Converts a raw string (possibly containing ANSI escape sequences) into a
+/// `Line<'static>` with ratatui style spans. Falls back to a plain unstyled
+/// line if the ANSI parser fails.
+fn parse_ansi_line(s: String) -> Line<'static> {
+    use ansi_to_tui::IntoText;
+    let bytes = s.as_bytes().to_vec();
+    match bytes.into_text() {
+        Ok(mut text) if !text.lines.is_empty() => text.lines.remove(0),
+        _ => Line::from(s),
     }
 }
 
@@ -676,7 +689,7 @@ impl App {
         } // rx borrow released
 
         for line in lines {
-            self.runner_tabs[tab_idx].push_log(line);
+            self.runner_tabs[tab_idx].push_log(parse_ansi_line(line));
         }
 
         // Complete signal: transition to Done and refresh display.
@@ -689,11 +702,11 @@ impl App {
             self.runner_tabs[tab_idx].runner_rx = None;
             self.runner_tabs[tab_idx].runner_kill_tx = None;
             self.runner_tabs[tab_idx].stdin_tx = None;
-            self.runner_tabs[tab_idx].push_log("--- Runner exited ---".to_string());
+            self.runner_tabs[tab_idx].push_log(Line::from("--- Runner exited ---"));
 
             if let Some(msg) = spawn_error {
                 let error_msg = msg.clone();
-                self.runner_tabs[tab_idx].push_log(format!("ERROR: {error_msg}"));
+                self.runner_tabs[tab_idx].push_log(Line::from(format!("ERROR: {error_msg}")));
                 self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg);
                 self.status_message = Some(error_msg);
                 self.status_message_expires = None; // persist until dismissed
@@ -722,7 +735,7 @@ impl App {
                     } else if iteration >= MAX_ITERATIONS {
                         let msg =
                             format!("Max iterations ({MAX_ITERATIONS}) reached. Stopping.");
-                        self.runner_tabs[tab_idx].push_log(msg);
+                        self.runner_tabs[tab_idx].push_log(Line::from(msg));
                         self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     } else {
                         // Natural exit within limit — ask user whether to continue.

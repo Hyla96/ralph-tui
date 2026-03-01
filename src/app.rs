@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::DefaultTerminal;
@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
+use vt100::Parser as VtParser;
 
 use crate::ralph::runner::RunnerEvent;
 use crate::ralph::store::Store;
@@ -27,25 +28,16 @@ pub enum RunnerTabState {
 /// Holds all state for a single runner tab.
 pub struct RunnerTab {
     pub workflow_name: String,
-    /// Capped at 1000 lines; oldest lines are dropped when the cap is exceeded.
-    pub log_lines: Vec<String>,
+    /// VT100 terminal emulator that processes raw PTY bytes.
+    /// Scrollback is set to 1000 rows. Dimensions kept in sync with the terminal.
+    pub parser: VtParser,
     pub state: RunnerTabState,
     pub runner_rx: Option<UnboundedReceiver<RunnerEvent>>,
     pub runner_kill_tx: Option<oneshot::Sender<()>>,
-    /// Sender used to deliver stdin lines to the claude subprocess (set in TASK-002).
-    pub stdin_tx: Option<UnboundedSender<String>>,
-    pub input_buffer: String,
+    /// Sender used to deliver raw bytes to the PTY stdin.
+    pub stdin_tx: Option<UnboundedSender<Vec<u8>>>,
     /// Scroll offset for the log view (0 = auto-scroll to bottom).
     pub log_scroll: usize,
-}
-
-impl RunnerTab {
-    fn push_log(&mut self, line: String) {
-        self.log_lines.push(line);
-        if self.log_lines.len() > 1000 {
-            self.log_lines.remove(0);
-        }
-    }
 }
 
 pub enum Dialog {
@@ -55,99 +47,186 @@ pub enum Dialog {
     Help,
 }
 
-/// Spawns `claude --agent ralph` and streams output lines back via `tx`.
+/// Spawns `claude --agent ralph` inside a PTY and streams output lines back via `tx`.
 /// Listens on `kill_rx` for an early termination signal.
-/// Lines received on `stdin_rx` are forwarded (with a trailing `\n`) to the
-/// child's stdin pipe.
+/// Lines received on `stdin_rx` are forwarded (with a trailing `\n`) to the PTY stdin.
 async fn runner_task(
     plan_dir: PathBuf,
     repo_root: PathBuf,
     tx: UnboundedSender<RunnerEvent>,
     kill_rx: oneshot::Receiver<()>,
-    mut stdin_rx: UnboundedReceiver<String>,
+    mut stdin_rx: UnboundedReceiver<Vec<u8>>,
+    size: (u16, u16),
+    resize_rx: UnboundedReceiver<(u16, u16)>,
 ) {
-    use std::process::Stdio;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-    let mut child = match tokio::process::Command::new("claude")
-        .args(["--agent", "ralph", "Implement the next task."])
-        .current_dir(&repo_root)
-        .env("RALPH_PLAN_DIR", &plan_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let _ = tx.send(RunnerEvent::SpawnError("claude not found on PATH".to_string()));
-            return;
-        }
+    // Send startup info through the channel so it appears in the vt100 screen, not stderr.
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!(
+            "[runner] spawning claude in {}\r\n[runner] RALPH_PLAN_DIR={}\r\n",
+            repo_root.display(),
+            plan_dir.display()
+        )
+        .into_bytes(),
+    ));
+
+    let (cols, rows) = size;
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
+        Ok(p) => p,
         Err(e) => {
-            let _ = tx.send(RunnerEvent::SpawnError(e.to_string()));
+            let _ = tx.send(RunnerEvent::SpawnError(format!("PTY open failed: {e}")));
             return;
         }
     };
 
-    let child_stdin = child.stdin.take().expect("stdin piped");
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let mut cmd = CommandBuilder::new("claude");
+    cmd.args(["--agent", "ralph", "Implement the next task."]);
+    cmd.cwd(&repo_root);
+    cmd.env("RALPH_PLAN_DIR", &plan_dir);
 
-    // Detached task: forward lines from stdin_rx to the child's stdin pipe.
-    // Exits silently when the channel closes or a write fails.
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            let friendly = if msg.contains("No such file") || msg.contains("not found") {
+                "claude not found on PATH".to_string()
+            } else {
+                msg
+            };
+            let _ = tx.send(RunnerEvent::SpawnError(friendly));
+            return;
+        }
+    };
+
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!("[runner] spawned claude pid={:?}\r\n", child.process_id()).into_bytes(),
+    ));
+
+    // Clone the killer handle so we can signal the child from the select arm
+    // without holding the child borrow (which is blocked in wait()).
+    let mut killer = child.clone_killer();
+
+    // Drop the slave end in the parent so EOF propagates to the master when
+    // the child process exits and closes its inherited slave fd.
+    drop(pair.slave);
+
+    // Extract master so it can be moved into the resize task after reader/writer are taken.
+    let master = pair.master;
+
+    let reader = match master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.send(RunnerEvent::SpawnError(format!("PTY reader: {e}")));
+            return;
+        }
+    };
+    let mut writer = match master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = tx.send(RunnerEvent::SpawnError(format!("PTY writer: {e}")));
+            return;
+        }
+    };
+
+    // Read PTY output in a blocking thread: send raw 4096-byte chunks as Bytes events.
+    // <promise>COMPLETE</promise> is detected by scanning the chunk as lossy UTF-8.
+    let tx_read = tx.clone();
+    let read_handle = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        let mut reader = reader;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    if String::from_utf8_lossy(chunk).contains("<promise>COMPLETE</promise>") {
+                        let _ = tx_read.send(RunnerEvent::Complete);
+                    }
+                    if tx_read.send(RunnerEvent::Bytes(chunk.to_vec())).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Forward stdin_rx bytes to PTY stdin. Writes are small and infrequent
+    // (user keyboard input), so a brief sync write in the async task is acceptable.
     drop(tokio::spawn(async move {
-        let mut writer = child_stdin;
-        while let Some(line) = stdin_rx.recv().await {
-            let mut data = line;
-            data.push('\n');
-            if writer.write_all(data.as_bytes()).await.is_err() {
+        use std::io::Write;
+        while let Some(bytes) = stdin_rx.recv().await {
+            if writer.write_all(&bytes).is_err() {
                 break;
             }
         }
     }));
 
-    let tx_stdout = tx.clone();
-    let stdout_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.contains("<promise>COMPLETE</promise>") {
-                let _ = tx_stdout.send(RunnerEvent::Complete);
-            }
-            if tx_stdout.send(RunnerEvent::Line(line)).is_err() {
-                break;
-            }
+    // Forward resize events to the PTY master. master is moved here after
+    // reader/writer are already extracted.
+    drop(tokio::spawn(async move {
+        use portable_pty::PtySize;
+        let mut resize_rx = resize_rx;
+        while let Some((cols, rows)) = resize_rx.recv().await {
+            let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         }
+    }));
+
+    // Wait for the child to exit in a blocking task; send the exit code via oneshot.
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<u32>();
+    tokio::task::spawn_blocking(move || {
+        let code = child.wait().map(|s| if s.success() { 0u32 } else { 1u32 }).unwrap_or(1u32);
+        let _ = done_tx.send(code);
     });
 
-    let tx_stderr = tx.clone();
-    let stderr_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.contains("<promise>COMPLETE</promise>") {
-                let _ = tx_stderr.send(RunnerEvent::Complete);
-            }
-            if tx_stderr.send(RunnerEvent::Line(line)).is_err() {
-                break;
-            }
-        }
-    });
-
-    // Wait for child to exit naturally or for a kill signal.
-    // When kill_rx fires, child.wait() future is dropped (borrow released)
-    // before child.kill() is called below — no simultaneous borrow conflict.
-    let was_killed = tokio::select! {
-        _ = child.wait() => false,
-        _ = kill_rx => true,
+    let (was_killed, exit_code) = tokio::select! {
+        result = done_rx => (false, Some(result.unwrap_or(1))),
+        _ = kill_rx => (true, None),
     };
 
     if was_killed {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+        let _ = killer.kill();
     }
 
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-    let _ = tx.send(RunnerEvent::Exited);
+    // Wait for the reader to drain all remaining PTY output before sending Exited.
+    let _ = read_handle.await;
+    // None = killed, Some(n) = natural exit with code n.
+    let _ = tx.send(RunnerEvent::Exited(exit_code));
+}
+
+/// Maps a crossterm `KeyEvent` to the raw bytes that should be sent to the PTY.
+///
+/// Returns `None` for keys that have no meaningful PTY representation (function
+/// keys, media keys, etc.).  The caller is responsible for intercepting keys
+/// that should NOT be forwarded (t, q, s, x, k/Up, j/Down, G/End, Ctrl+C).
+fn key_to_pty_bytes(key: KeyEvent) -> Option<Vec<u8>> {
+    // Ctrl+letter → control byte (Ctrl+A = 1 … Ctrl+Z = 26).
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(c) = key.code
+    {
+        let lower = c.to_ascii_lowercase();
+        if lower.is_ascii_alphabetic() {
+            return Some(vec![lower as u8 - b'a' + 1]);
+        }
+    }
+
+    match key.code {
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            Some(c.encode_utf8(&mut buf).as_bytes().to_vec())
+        }
+        KeyCode::Enter => Some(vec![b'\r']),
+        KeyCode::Backspace => Some(vec![b'\x7f']),
+        KeyCode::Tab => Some(vec![b'\t']),
+        KeyCode::Esc => Some(vec![b'\x1b']),
+        KeyCode::Up => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down => Some(b"\x1b[B".to_vec()),
+        KeyCode::Right => Some(b"\x1b[C".to_vec()),
+        KeyCode::Left => Some(b"\x1b[D".to_vec()),
+        _ => None,
+    }
 }
 
 pub struct App {
@@ -165,10 +244,15 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub status_message: Option<String>,
     pub status_message_expires: Option<Instant>,
+    /// Terminal size at startup; used as initial PTY size for runner tasks.
+    pub initial_size: (u16, u16),
+    /// One sender per active runner task; used to propagate terminal resize events.
+    /// Dead senders (task exited) are pruned lazily when the next resize event arrives.
+    pub resize_txs: Vec<UnboundedSender<(u16, u16)>>,
 }
 
 impl App {
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, initial_size: (u16, u16)) -> Self {
         let workflows = store.list_workflows();
         let selected_workflow = if workflows.is_empty() { None } else { Some(0) };
         let mut app = App {
@@ -183,6 +267,8 @@ impl App {
             dialog: None,
             status_message: None,
             status_message_expires: None,
+            initial_size,
+            resize_txs: Vec::new(),
         };
         app.load_current_workflow();
         app
@@ -209,16 +295,31 @@ impl App {
     }
 
     fn handle_events(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
-            if self.dialog.is_some() {
-                self.handle_dialog_key(key.code);
-            } else if self.tab_nav_pending {
-                // Consume the chord: always clear the flag, then act.
-                self.tab_nav_pending = false;
-                self.handle_tab_nav_key(key.code);
-            } else if self.active_tab == 0 {
+        if !event::poll(Duration::from_millis(100))? {
+            return Ok(());
+        }
+        match event::read()? {
+            Event::Resize(cols, rows) => {
+                // Broadcast new size to all active PTY runners; prune dead senders.
+                self.resize_txs.retain(|tx| tx.send((cols, rows)).is_ok());
+                // Recreate each RunnerTab's vt100::Parser with the new dimensions.
+                // vt100::Parser has no resize() method, so a new parser is created.
+                // Known limitation: the screen state is cleared on resize — scrollback is not replayed.
+                for tab in &mut self.runner_tabs {
+                    tab.parser = VtParser::new(rows, cols, 1000);
+                    tab.log_scroll = 0;
+                }
+                self.initial_size = (cols, rows);
+            }
+            Event::Key(key) => {
+                #[allow(clippy::collapsible_else_if)]
+                if self.dialog.is_some() {
+                    self.handle_dialog_key(key.code);
+                } else if self.tab_nav_pending {
+                    // Consume the chord: always clear the flag, then act.
+                    self.tab_nav_pending = false;
+                    self.handle_tab_nav_key(key.code);
+                } else if self.active_tab == 0 {
                 // Workflows tab keybindings.
                 match key.code {
                     KeyCode::Char('t') => self.tab_nav_pending = true,
@@ -238,6 +339,8 @@ impl App {
                 }
             } else {
                 // Runner tab keybindings.
+                // Keys NOT forwarded to PTY: t, q, Ctrl+C, s, x, k/Up, j/Down, G/End.
+                // All other keys are forwarded as raw bytes via key_to_pty_bytes.
                 match key.code {
                     KeyCode::Char('t') => self.tab_nav_pending = true,
                     KeyCode::Char('q') => self.running = false,
@@ -265,79 +368,50 @@ impl App {
                             self.active_tab = self.active_tab.saturating_sub(1);
                         }
                     }
-                    // Log scroll: Up/k scroll up (toward older lines), Down/j scroll down.
-                    // log_scroll == 0 means auto-scroll (always show newest line).
-                    // log_scroll == N means show the line N positions from the bottom.
+                    // Log scroll: Up/k scroll up (into scrollback), Down/j scroll down.
+                    // log_scroll == 0 means auto-scroll (live vt100 screen).
+                    // log_scroll == N means N rows of scrollback are shown above the screen.
+                    // The scrollback position is kept in sync on the vt100 parser's screen so
+                    // that PseudoTerminal renders the correct view without needing &mut in draw.
                     KeyCode::Up | KeyCode::Char('k') => {
                         let tab_idx = self.active_tab - 1;
-                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx)
-                            && !tab.log_lines.is_empty()
-                        {
-                            let last = tab.log_lines.len() - 1;
-                            tab.log_scroll = (tab.log_scroll + 1).min(last);
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            // Cap at the configured scrollback size (1000 rows).
+                            tab.log_scroll = (tab.log_scroll + 1).min(1000);
+                            tab.parser.screen_mut().set_scrollback(tab.log_scroll);
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         let tab_idx = self.active_tab - 1;
                         if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
                             tab.log_scroll = tab.log_scroll.saturating_sub(1);
+                            tab.parser.screen_mut().set_scrollback(tab.log_scroll);
                         }
                     }
-                    // End or G re-enables auto-scroll.
+                    // End or G re-enables auto-scroll (live screen, scrollback = 0).
                     KeyCode::End | KeyCode::Char('G') => {
                         let tab_idx = self.active_tab - 1;
                         if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
                             tab.log_scroll = 0;
+                            tab.parser.screen_mut().set_scrollback(0);
                         }
                     }
-                    // Input buffer: Backspace removes last char.
-                    KeyCode::Backspace => {
-                        let tab_idx = self.active_tab - 1;
-                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                            tab.input_buffer.pop();
-                        }
-                    }
-                    // Input buffer: Enter sends trimmed buffer via stdin_tx (if active).
-                    KeyCode::Enter => {
-                        let tab_idx = self.active_tab - 1;
-                        // Extract result inside the borrow scope so self.status_message
-                        // can be set after the borrow on runner_tabs is released.
-                        let error_msg = self.runner_tabs.get_mut(tab_idx).and_then(|tab| {
-                            let trimmed = tab.input_buffer.trim().to_string();
-                            tab.input_buffer.clear();
-                            if let Some(tx) = &tab.stdin_tx {
-                                let _ = tx.send(trimmed);
-                                None
-                            } else {
-                                Some("Runner is not active".to_string())
+                    // All other keys are forwarded directly to the PTY as raw bytes.
+                    _ => {
+                        if let Some(bytes) = key_to_pty_bytes(key) {
+                            let tab_idx = self.active_tab - 1;
+                            if let Some(tab) = self.runner_tabs.get(tab_idx)
+                                && let Some(tx) = &tab.stdin_tx
+                            {
+                                let _ = tx.send(bytes);
                             }
-                        });
-                        if let Some(msg) = error_msg {
-                            self.status_message = Some(msg);
-                            self.status_message_expires =
-                                Some(Instant::now() + Duration::from_secs(2));
                         }
                     }
-                    // Input buffer: Esc clears without sending.
-                    KeyCode::Esc => {
-                        let tab_idx = self.active_tab - 1;
-                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                            tab.input_buffer.clear();
-                        }
-                    }
-                    // Input buffer: append any remaining printable char.
-                    // Specific chars (t/q/s/k/j/G and Ctrl+C) are caught by earlier arms
-                    // so they never reach here.
-                    KeyCode::Char(c) if !c.is_control() => {
-                        let tab_idx = self.active_tab - 1;
-                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                            tab.input_buffer.push(c);
-                        }
-                    }
-                    _ => {}
                 }
-            }
-        }
+            }   // closes else { block
+            }   // closes Event::Key(key) => { arm body
+            _ => {} // other events (mouse, focus, paste, …) are ignored
+        }       // closes match event::read()?
         Ok(())
     }
 
@@ -587,10 +661,12 @@ impl App {
     /// Drains events from the channel of runner tab at `tab_idx` and processes them.
     fn drain_tab_channel(&mut self, tab_idx: usize) {
         // Collect events into local vecs to avoid simultaneous mutable borrows.
-        let mut lines: Vec<String> = Vec::new();
+        let mut byte_chunks: Vec<Vec<u8>> = Vec::new();
         let mut done = false;
         let mut complete = false;
         let mut spawn_error: Option<String> = None;
+        // None = killed/unknown, Some(n) = natural exit code.
+        let mut exited_code: Option<Option<u32>> = None;
 
         {
             let rx = match self.runner_tabs[tab_idx].runner_rx.as_mut() {
@@ -600,9 +676,11 @@ impl App {
             loop {
                 use tokio::sync::mpsc::error::TryRecvError;
                 match rx.try_recv() {
-                    Ok(RunnerEvent::Line(line)) => lines.push(line),
+                    Ok(RunnerEvent::Bytes(bytes)) => byte_chunks.push(bytes),
                     Ok(RunnerEvent::Complete) => complete = true,
-                    Ok(RunnerEvent::Exited) => {
+                    Ok(RunnerEvent::Resize(_, _)) => {} // resize acks via separate channel; ignore
+                    Ok(RunnerEvent::Exited(code_opt)) => {
+                        exited_code = Some(code_opt);
                         done = true;
                         break;
                     }
@@ -620,8 +698,9 @@ impl App {
             }
         } // rx borrow released
 
-        for line in lines {
-            self.runner_tabs[tab_idx].push_log(line);
+        // Feed raw bytes into the vt100 parser.
+        for chunk in byte_chunks {
+            self.runner_tabs[tab_idx].parser.process(&chunk);
         }
 
         // Complete signal: transition to Done and refresh display.
@@ -634,12 +713,26 @@ impl App {
             self.runner_tabs[tab_idx].runner_rx = None;
             self.runner_tabs[tab_idx].runner_kill_tx = None;
             self.runner_tabs[tab_idx].stdin_tx = None;
-            self.runner_tabs[tab_idx].push_log("--- Runner exited ---".to_string());
+
+            // Write exit/stopped summary into the parser; skip for spawn errors (process never ran).
+            if spawn_error.is_none() {
+                let msg = match exited_code {
+                    Some(None) => "\r\n--- Runner stopped ---\r\n".to_string(),
+                    Some(Some(code)) => {
+                        format!("\r\n--- Runner exited (code: {code}) ---\r\n")
+                    }
+                    None => "\r\n--- Runner exited ---\r\n".to_string(),
+                };
+                self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
+            }
 
             if let Some(msg) = spawn_error {
-                let error_msg = msg.clone();
-                self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg);
-                self.status_message = Some(error_msg);
+                // Write spawn error into the parser so it appears in the terminal output.
+                let err_msg = format!("\r\nSpawnError: {msg}\r\n");
+                self.runner_tabs[tab_idx].parser.process(err_msg.as_bytes());
+                self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg.clone());
+                self.status_message = Some(msg);
+                self.status_message_expires = None; // persist until dismissed
             } else {
                 // Reload plan from disk — ralph may have updated passes: true.
                 self.load_current_workflow();
@@ -664,8 +757,8 @@ impl App {
                         self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     } else if iteration >= MAX_ITERATIONS {
                         let msg =
-                            format!("Max iterations ({MAX_ITERATIONS}) reached. Stopping.");
-                        self.runner_tabs[tab_idx].push_log(msg);
+                            format!("\r\nMax iterations ({MAX_ITERATIONS}) reached. Stopping.\r\n");
+                        self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
                         self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     } else {
                         // Natural exit within limit — ask user whether to continue.
@@ -725,7 +818,8 @@ impl App {
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
 
         // Reuse an existing Done/Error tab for this workflow rather than accumulating tabs.
         let reuse_idx = self.runner_tabs.iter().position(|t| {
@@ -733,11 +827,12 @@ impl App {
                 && !matches!(t.state, RunnerTabState::Running { .. })
         });
 
+        let (cols, rows) = self.initial_size;
         if let Some(reuse) = reuse_idx {
             let tab = &mut self.runner_tabs[reuse];
-            tab.log_lines.clear();
+            // Reset parser with current terminal dimensions; scrollback capacity = 1000.
+            tab.parser = VtParser::new(rows, cols, 1000);
             tab.log_scroll = 0;
-            tab.input_buffer.clear();
             tab.state = RunnerTabState::Running { iteration: 1 };
             tab.runner_rx = Some(rx);
             tab.runner_kill_tx = Some(kill_tx);
@@ -746,20 +841,20 @@ impl App {
         } else {
             let tab = RunnerTab {
                 workflow_name: name,
-                log_lines: Vec::new(),
+                parser: VtParser::new(rows, cols, 1000),
                 state: RunnerTabState::Running { iteration: 1 },
                 runner_rx: Some(rx),
                 runner_kill_tx: Some(kill_tx),
                 stdin_tx: Some(stdin_tx),
-                input_buffer: String::new(),
                 log_scroll: 0,
             };
             self.runner_tabs.push(tab);
             self.active_tab = self.runner_tabs.len(); // runner tabs are 1-indexed in active_tab
         }
 
+        self.resize_txs.push(resize_tx);
         drop(tokio::spawn(runner_task(
-            plan_dir, repo_root, tx, kill_rx, stdin_rx,
+            plan_dir, repo_root, tx, kill_rx, stdin_rx, self.initial_size, resize_rx,
         )));
     }
 
@@ -788,7 +883,8 @@ impl App {
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
 
         if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
             tab.runner_rx = Some(rx);
@@ -797,8 +893,9 @@ impl App {
             tab.state = RunnerTabState::Running { iteration: iteration + 1 };
         }
 
+        self.resize_txs.push(resize_tx);
         drop(tokio::spawn(runner_task(
-            plan_dir, repo_root, tx, kill_rx, stdin_rx,
+            plan_dir, repo_root, tx, kill_rx, stdin_rx, self.initial_size, resize_rx,
         )));
     }
 }

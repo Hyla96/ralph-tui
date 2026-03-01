@@ -21,6 +21,10 @@ check: build lint
 run:
     cargo run
 
+# Run with all output redirected to /tmp/ralph_cli.log for debugging (tail -f /tmp/ralph_cli.log in another terminal)
+run-log:
+    cargo run 2>/tmp/ralph_cli.log
+
 # Run with a release build
 run-release:
     cargo run --release

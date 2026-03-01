@@ -2,34 +2,31 @@
 
 A Rust TUI for managing and running [Ralph](https://github.com/anthropics/claude-code) agent loops. Replaces the `scripts/ralph/ralph.sh` and `scripts/ralph/ralph-status.sh` bash scripts with a live terminal dashboard.
 
-> **Status:** In active development. The TUI opens, displays plans and story progress, and supports creating new plans. Loop execution ([r]un/[s]top), editing, deletion, and the help overlay are not yet implemented. The shell scripts in `scripts/ralph/` remain the working implementation for running loops.
-
 ---
 
 ## What it does
 
 Run `ralph-cli` inside any git repository to:
 
-- Browse all plans stored in `.ralph/plans/`
-- See per-plan story progress at a glance
-- Start and stop Ralph loops (spawns `claude --agent ralph` under the hood)
-- Stream subprocess output live into a log panel
-- Create, edit, and delete plans without leaving the terminal
+- Browse all workflows stored in `.ralph/workflows/`
+- See per-workflow task progress at a glance
+- Run and stop Ralph loops — spawns `claude --agent ralph` in a live runner tab
+- Stream subprocess output and send stdin input without leaving the terminal
+- Create, edit (via `$EDITOR`), and delete workflows
 
-The three-panel layout mirrors the information you get from `ralph-status.sh` but stays live and interactive.
+Each running workflow opens in its own tab. Multiple workflows can run concurrently.
 
 ---
 
-## Plan file layout
+## Workflow file layout
 
-Plans live inside the repository under `.ralph/plans/`:
+Workflows live inside the repository under `.ralph/workflows/`:
 
 ```
 .ralph/
-└── plans/
-    └── <plan-name>/
-        ├── prd.json      # stories, validation commands, branch name
-        └── progress.txt  # append-only implementation log
+└── workflows/
+    └── <workflow-name>/
+        └── prd.json      # tasks, validation commands, branch name
 ```
 
 ### prd.json schema
@@ -38,11 +35,11 @@ Plans live inside the repository under `.ralph/plans/`:
 {
   "project": "my-project",
   "branchName": "my-feature-branch",
-  "description": "What this plan delivers",
+  "description": "What this workflow delivers",
   "validationCommands": ["cargo build", "cargo clippy -- -D warnings"],
-  "userStories": [
+  "tasks": [
     {
-      "id": "US-001",
+      "id": "TASK-001",
       "title": "Short title",
       "description": "As a ..., I need ...",
       "acceptanceCriteria": ["criterion one", "criterion two"],
@@ -54,18 +51,49 @@ Plans live inside the repository under `.ralph/plans/`:
 }
 ```
 
-`passes: true` means the story has been implemented and all validation commands passed. The Ralph agent sets this itself before committing.
+`passes: true` means the task has been implemented and all validation commands passed. The Ralph agent sets this itself before committing.
+
+---
 
 ## Keybindings
 
+### Workflows tab
+
 | Key | Action |
 |---|---|
-| `j` / `↓` | Move focus down in the plans list |
-| `k` / `↑` | Move focus up in the plans list |
-| `n` | Open "New plan" dialog |
-| `q` | Quit |
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `r` | Run selected workflow (opens a new runner tab) |
+| `s` | Stop the runner for the selected workflow |
+| `n` | Open "New workflow" dialog |
+| `e` | Edit `prd.json` in `$EDITOR` |
+| `d` | Delete selected workflow (with confirmation) |
+| `?` | Open help overlay |
+| `t` + chord | Navigate tabs (see below) |
+| `q` / `Ctrl+C` | Quit |
 
-Bindings for `r` (run), `s` (stop), `e` (edit), `d` (delete), and `?` (help) are shown in the status bar but are not yet implemented.
+### Runner tab
+
+| Key | Action |
+|---|---|
+| `k` / `↑` | Scroll log up |
+| `j` / `↓` | Scroll log down |
+| `G` / `End` | Jump to bottom (resume auto-scroll) |
+| `s` | Stop the runner |
+| `x` | Close tab (only when runner is done or errored) |
+| `Enter` | Send input buffer to subprocess stdin |
+| `Esc` | Clear input buffer without sending |
+| `t` + chord | Navigate tabs (see below) |
+| `q` / `Ctrl+C` | Quit |
+
+### Tab navigation (`t` chord)
+
+Press `t`, then:
+
+| Key | Action |
+|---|---|
+| `1`–`9` | Jump to tab by number (1 = Workflows tab) |
+| `←` / `→` | Cycle through tabs with wrapping |
 
 ---
 
@@ -73,7 +101,7 @@ Bindings for `r` (run), `s` (stop), `e` (edit), `d` (delete), and `?` (help) are
 
 ### Prerequisites
 
-- Rust (edition 2024, toolchain ≥ 1.93)
+- Rust (edition 2024, toolchain ≥ 1.86)
 - [`just`](https://github.com/casey/just) task runner (`cargo install just` or `brew install just`)
 
 ### Common tasks
@@ -84,6 +112,7 @@ just check        # build + clippy (the full validation gate)
 just lint         # cargo clippy -- -D warnings
 just test         # cargo test
 just run          # cargo run
+just run-log      # cargo run with stderr → /tmp/ralph.log (for debugging)
 just fmt          # cargo fmt
 just fmt-check    # check formatting without modifying files
 just fix          # cargo clippy --fix --allow-staged
@@ -93,23 +122,33 @@ just              # list all recipes
 
 `just check` runs the same commands as `prd.json`'s `validationCommands`.
 
+To watch logs while debugging:
+
+```sh
+# Terminal 1
+just run-log
+
+# Terminal 2
+tail -f /tmp/ralph.log
+```
+
 ### Project structure
 
 ```
 src/
-├── main.rs            # entry point, module imports
-├── app.rs             # App state struct (TUI state machine)
-├── ui.rs              # ratatui draw function
+├── main.rs            # entry point, panic hook, ratatui init
+├── app.rs             # App state struct, event loop, keybindings
+├── ui.rs              # ratatui draw functions
 └── ralph/
     ├── mod.rs         # module declarations
-    ├── store.rs       # Store — git root detection, .ralph/plans/ management
-    ├── plan.rs        # Plan, PrdJson, UserStory — prd.json I/O
-    └── runner.rs      # Ralph subprocess runner (stub)
+    ├── store.rs       # Store — git root detection, .ralph/workflows/ management
+    ├── workflow.rs    # Workflow, PrdJson, Task — prd.json I/O
+    └── runner.rs      # RunnerEvent — event types for subprocess streaming
 ```
 
-**`store.rs`** — `Store::find(path)` walks up from any path to find the git root. All plan directory paths go through `Store` methods.
+**`store.rs`** — `Store::find(path)` walks up from any path to find the git root. All workflow directory paths go through `Store` methods.
 
-**`plan.rs`** — `Plan::load(dir)` deserializes `prd.json`. `Plan::save(dir)` writes it back. Helper methods: `done_count()`, `total_count()`, `next_story()`, `is_complete()`.
+**`workflow.rs`** — `Workflow::load(dir)` deserializes `prd.json`. `Workflow::save(dir)` writes it back. Helper methods: `done_count()`, `total_count()`, `next_task()`, `is_complete()`.
 
 ### Key dependencies
 
@@ -124,31 +163,25 @@ src/
 
 ---
 
+## Running the Ralph agent
+
+The Ralph agent prompt and instructions live in `.claude/` and are loaded by `claude --agent ralph`. The agent reads the highest-priority incomplete task from `prd.json`, implements it, runs validation, and sets `passes: true` before committing.
+
+Each invocation handles exactly one task. The runner loop re-invokes the agent until all tasks are complete or it receives `<promise>COMPLETE</promise>` in the output.
+
+---
+
 ## Legacy shell scripts
 
 The original implementation lives in `scripts/ralph/` and still works:
 
 ```sh
-# Run the ralph loop (interactive, prompts between stories)
+# Run the ralph loop (interactive, prompts between tasks)
 ./scripts/ralph/ralph.sh [max_iterations]
 ./scripts/ralph/ralph.sh -f path/to/prd.json [max_iterations]
 
-# Print story progress for the current prd.json
+# Print task progress for the current prd.json
 ./scripts/ralph/ralph-status.sh
 ```
 
 **Prerequisites for the shell scripts:** `claude` CLI and `jq` must be on `PATH`.
-
-The shell scripts expect `prd.json` in the current working directory. They archive previous runs to `scripts/ralph/archive/` when the `branchName` changes.
-
-### Migration
-
-If you have an existing project using the `scripts/ralph/prd.json` layout, `ralph-cli` will detect it on startup and offer to migrate to `.ralph/plans/` automatically (once the TUI is complete — US-014).
-
----
-
-## Running the Ralph agent
-
-The Ralph agent prompt and instructions live in `.ralph/` (agent config) and are loaded by `claude --agent ralph`. The agent reads the highest-priority incomplete story from `prd.json`, implements it, runs validation, and sets `passes: true` before committing.
-
-Each invocation handles exactly one story. The loop (either `ralph-cli` or `ralph.sh`) re-invokes the agent until all stories are complete or it receives `<promise>COMPLETE</promise>` in the output.

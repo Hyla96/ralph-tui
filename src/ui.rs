@@ -121,39 +121,36 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status_text), vertical[2]);
 }
 
-/// Renders an active runner tab: log panel (top) | status line | input row (bottom).
+/// Renders an active runner tab: log panel (top) | status line (bottom).
 ///
 /// Layout (from top to bottom):
 ///   log view  — flexible height, scrollable; log_scroll==0 auto-scrolls to newest line
 ///   status line — 1 line: shows Running/Done/Error state or a transient status message
-///   input row — 1 line: shows `> {input_buffer}`; printable chars, Backspace, Enter, Esc handled in app.rs
+///
+/// Keyboard input is forwarded directly to the PTY as raw bytes (no input buffer row).
 fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
     let tab = match app.runner_tabs.get(app.active_tab - 1) {
         Some(t) => t,
         None => return,
     };
 
-    // Split: log panel (flexible) | status line (1 line) | input row (1 line)
+    // Split: log panel (flexible) | status line (1 line)
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    // Log panel — scroll-aware selection.
-    // log_scroll == 0 → auto-scroll (selected = last line).
-    // log_scroll == N → show the line N positions from the bottom.
+    // Log panel — rendered by tui_term::widget::PseudoTerminal from the vt100 screen.
+    // The vt100 screen's scrollback position (set_scrollback) is updated by the key handlers
+    // so that PseudoTerminal renders the correct view (scrollback or live) without requiring
+    // a mutable App reference in draw. When log_scroll == 0 the live screen is shown;
+    // when log_scroll > 0 the screen is offset into the scrollback buffer.
     let log_title = format!("Runner: {} — Up/k scroll up  End/G bottom", tab.workflow_name);
     let log_block = Block::default().borders(Borders::ALL).title(log_title);
-    if tab.log_lines.is_empty() {
-        frame.render_widget(log_block, layout[0]);
-    } else {
-        let last = tab.log_lines.len() - 1;
-        let selected = last.saturating_sub(tab.log_scroll);
-        let items: Vec<ListItem> =
-            tab.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
-        let list = List::new(items).block(log_block);
-        let mut log_state = ListState::default().with_selected(Some(selected));
-        frame.render_stateful_widget(list, layout[0], &mut log_state);
+    {
+        use tui_term::widget::PseudoTerminal;
+        let pseudo_term = PseudoTerminal::new(tab.parser.screen()).block(log_block);
+        frame.render_widget(pseudo_term, layout[0]);
     }
 
     // Status line: transient messages take priority; otherwise show runner state.
@@ -165,17 +162,21 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(format!("[s]top  Running \u{2014} iteration {}/10", iteration))
             }
             RunnerTabState::Done => Line::from("[x]close  Done"),
-            RunnerTabState::Error(msg) => Line::from(Span::styled(
-                format!("Error: {msg}  [x]close  [q]uit"),
-                Style::default().fg(Color::Red),
-            )),
+            RunnerTabState::Error(msg) => {
+                let prefix = "Error: ";
+                let suffix = "  [x]close  [q]uit";
+                let avail = layout[1].width as usize;
+                let max_msg = avail.saturating_sub(prefix.len() + suffix.len());
+                let truncated: String = msg.chars().take(max_msg).collect();
+                Line::from(Span::styled(
+                    format!("{prefix}{truncated}{suffix}"),
+                    Style::default().fg(Color::Red),
+                ))
+            }
         }
     };
     frame.render_widget(Paragraph::new(status_text), layout[1]);
 
-    // Input row: `> {input_buffer}`. Keystrokes are handled in app.rs.
-    let input_text = format!("> {}", tab.input_buffer);
-    frame.render_widget(Paragraph::new(input_text.as_str()), layout[2]);
 }
 
 /// Renders the single-line tab bar at the top of the screen.

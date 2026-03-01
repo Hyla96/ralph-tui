@@ -1,6 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use ratatui::text::Line;
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::DefaultTerminal;
@@ -200,19 +201,19 @@ async fn runner_task(
         }
     }));
 
-    // Wait for the child to exit in a blocking task; signal completion via oneshot.
-    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    // Wait for the child to exit in a blocking task; send the exit code via oneshot.
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<u32>();
     tokio::task::spawn_blocking(move || {
-        let _ = child.wait();
-        let _ = done_tx.send(());
+        let code = child.wait().map(|s| if s.success() { 0u32 } else { 1u32 }).unwrap_or(1u32);
+        let _ = done_tx.send(code);
     });
 
-    let was_killed = tokio::select! {
-        _ = done_rx => {
+    let (was_killed, exit_code) = tokio::select! {
+        result = done_rx => {
             eprintln!("[runner] claude exited naturally");
-            false
+            (false, Some(result.unwrap_or(1)))
         }
-        _ = kill_rx => true,
+        _ = kill_rx => (true, None),
     };
 
     if was_killed {
@@ -223,7 +224,8 @@ async fn runner_task(
 
     // Wait for the reader to drain all remaining PTY output before sending Exited.
     let _ = read_handle.await;
-    let _ = tx.send(RunnerEvent::Exited);
+    // None = killed, Some(n) = natural exit with code n.
+    let _ = tx.send(RunnerEvent::Exited(exit_code));
 }
 
 /// Maps a crossterm `KeyEvent` to the raw bytes that should be sent to the PTY.
@@ -684,6 +686,8 @@ impl App {
         let mut done = false;
         let mut complete = false;
         let mut spawn_error: Option<String> = None;
+        // None = killed/unknown, Some(n) = natural exit code.
+        let mut exited_code: Option<Option<u32>> = None;
 
         {
             let rx = match self.runner_tabs[tab_idx].runner_rx.as_mut() {
@@ -696,7 +700,8 @@ impl App {
                     Ok(RunnerEvent::Line(line)) => lines.push(line),
                     Ok(RunnerEvent::Complete) => complete = true,
                     Ok(RunnerEvent::Resize(_, _)) => {} // resize acks via separate channel; ignore
-                    Ok(RunnerEvent::Exited) => {
+                    Ok(RunnerEvent::Exited(code_opt)) => {
+                        exited_code = Some(code_opt);
                         done = true;
                         break;
                     }
@@ -728,13 +733,34 @@ impl App {
             self.runner_tabs[tab_idx].runner_rx = None;
             self.runner_tabs[tab_idx].runner_kill_tx = None;
             self.runner_tabs[tab_idx].stdin_tx = None;
-            self.runner_tabs[tab_idx].push_log(Line::from("--- Runner exited ---"));
+
+            // Push exit/stopped summary line; skip for spawn errors (process never ran).
+            if spawn_error.is_none() {
+                match exited_code {
+                    Some(None) => {
+                        // Process was killed via stop.
+                        self.runner_tabs[tab_idx].push_log(Line::from("--- Runner stopped ---"));
+                    }
+                    Some(Some(code)) => {
+                        // Natural exit with exit code.
+                        self.runner_tabs[tab_idx]
+                            .push_log(Line::from(format!("--- Runner exited (code: {code}) ---")));
+                    }
+                    None => {
+                        // Channel disconnected without explicit Exited (unexpected).
+                        self.runner_tabs[tab_idx].push_log(Line::from("--- Runner exited ---"));
+                    }
+                }
+            }
 
             if let Some(msg) = spawn_error {
-                let error_msg = msg.clone();
-                self.runner_tabs[tab_idx].push_log(Line::from(format!("ERROR: {error_msg}")));
-                self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg);
-                self.status_message = Some(error_msg);
+                // Push the error message as a red-styled line in the log.
+                self.runner_tabs[tab_idx].push_log(Line::from(Span::styled(
+                    format!("SpawnError: {msg}"),
+                    Style::default().fg(Color::Red),
+                )));
+                self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg.clone());
+                self.status_message = Some(msg);
                 self.status_message_expires = None; // persist until dismissed
             } else {
                 // Reload plan from disk — ralph may have updated passes: true.

@@ -166,10 +166,17 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(format!("[s]top  Running \u{2014} iteration {}/10", iteration))
             }
             RunnerTabState::Done => Line::from("[x]close  Done"),
-            RunnerTabState::Error(msg) => Line::from(Span::styled(
-                format!("Error: {msg}  [x]close  [q]uit"),
-                Style::default().fg(Color::Red),
-            )),
+            RunnerTabState::Error(msg) => {
+                let prefix = "Error: ";
+                let suffix = "  [x]close  [q]uit";
+                let avail = layout[1].width as usize;
+                let max_msg = avail.saturating_sub(prefix.len() + suffix.len());
+                let truncated: String = msg.chars().take(max_msg).collect();
+                Line::from(Span::styled(
+                    format!("{prefix}{truncated}{suffix}"),
+                    Style::default().fg(Color::Red),
+                ))
+            }
         }
     };
     frame.render_widget(Paragraph::new(status_text), layout[1]);

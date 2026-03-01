@@ -245,6 +245,26 @@ impl App {
                         self.running = false;
                     }
                     KeyCode::Char('s') => self.stop_runner(),
+                    // Close a Done/Error runner tab; refuse if still Running.
+                    KeyCode::Char('x') => {
+                        let tab_idx = self.active_tab - 1;
+                        let is_running = self
+                            .runner_tabs
+                            .get(tab_idx)
+                            .map(|t| matches!(t.state, RunnerTabState::Running { .. }))
+                            .unwrap_or(false);
+                        if is_running {
+                            self.status_message =
+                                Some("Stop the runner first [s]".to_string());
+                            self.status_message_expires =
+                                Some(Instant::now() + Duration::from_secs(2));
+                        } else if self.runner_tabs.get(tab_idx).is_some() {
+                            self.runner_tabs.remove(tab_idx);
+                            // Move to the previous tab; saturating_sub(1) gives 0 (Workflows)
+                            // when active_tab was 1 (the only runner tab).
+                            self.active_tab = self.active_tab.saturating_sub(1);
+                        }
+                    }
                     // Log scroll: Up/k scroll up (toward older lines), Down/j scroll down.
                     // log_scroll == 0 means auto-scroll (always show newest line).
                     // log_scroll == N means show the line N positions from the bottom.
@@ -614,6 +634,7 @@ impl App {
             self.runner_tabs[tab_idx].runner_rx = None;
             self.runner_tabs[tab_idx].runner_kill_tx = None;
             self.runner_tabs[tab_idx].stdin_tx = None;
+            self.runner_tabs[tab_idx].push_log("--- Runner exited ---".to_string());
 
             if let Some(msg) = spawn_error {
                 let error_msg = msg.clone();
@@ -706,18 +727,36 @@ impl App {
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-        let tab = RunnerTab {
-            workflow_name: name,
-            log_lines: Vec::new(),
-            state: RunnerTabState::Running { iteration: 1 },
-            runner_rx: Some(rx),
-            runner_kill_tx: Some(kill_tx),
-            stdin_tx: Some(stdin_tx),
-            input_buffer: String::new(),
-            log_scroll: 0,
-        };
-        self.runner_tabs.push(tab);
-        self.active_tab = self.runner_tabs.len(); // runner tabs are 1-indexed in active_tab
+        // Reuse an existing Done/Error tab for this workflow rather than accumulating tabs.
+        let reuse_idx = self.runner_tabs.iter().position(|t| {
+            t.workflow_name == name
+                && !matches!(t.state, RunnerTabState::Running { .. })
+        });
+
+        if let Some(reuse) = reuse_idx {
+            let tab = &mut self.runner_tabs[reuse];
+            tab.log_lines.clear();
+            tab.log_scroll = 0;
+            tab.input_buffer.clear();
+            tab.state = RunnerTabState::Running { iteration: 1 };
+            tab.runner_rx = Some(rx);
+            tab.runner_kill_tx = Some(kill_tx);
+            tab.stdin_tx = Some(stdin_tx);
+            self.active_tab = reuse + 1; // active_tab is 1-indexed for runner tabs
+        } else {
+            let tab = RunnerTab {
+                workflow_name: name,
+                log_lines: Vec::new(),
+                state: RunnerTabState::Running { iteration: 1 },
+                runner_rx: Some(rx),
+                runner_kill_tx: Some(kill_tx),
+                stdin_tx: Some(stdin_tx),
+                input_buffer: String::new(),
+                log_scroll: 0,
+            };
+            self.runner_tabs.push(tab);
+            self.active_tab = self.runner_tabs.len(); // runner tabs are 1-indexed in active_tab
+        }
 
         drop(tokio::spawn(runner_task(
             plan_dir, repo_root, tx, kill_rx, stdin_rx,

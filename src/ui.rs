@@ -164,9 +164,9 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
             RunnerTabState::Running { iteration } => {
                 Line::from(format!("[s]top  Running \u{2014} iteration {}/10", iteration))
             }
-            RunnerTabState::Done => Line::from("[q]uit  Done"),
+            RunnerTabState::Done => Line::from("[x]close  Done"),
             RunnerTabState::Error(msg) => Line::from(Span::styled(
-                format!("Error: {msg}  [q]uit"),
+                format!("Error: {msg}  [x]close  [q]uit"),
                 Style::default().fg(Color::Red),
             )),
         }

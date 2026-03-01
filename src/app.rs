@@ -61,15 +61,21 @@ async fn runner_task(
 ) {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
-    eprintln!("[runner] spawning claude in {}", repo_root.display());
-    eprintln!("[runner] RALPH_PLAN_DIR={}", plan_dir.display());
+    // Send startup info through the channel so it appears in the vt100 screen, not stderr.
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!(
+            "[runner] spawning claude in {}\r\n[runner] RALPH_PLAN_DIR={}\r\n",
+            repo_root.display(),
+            plan_dir.display()
+        )
+        .into_bytes(),
+    ));
 
     let (cols, rows) = size;
     let pty_system = native_pty_system();
     let pair = match pty_system.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[runner] PTY open failed: {e}");
             let _ = tx.send(RunnerEvent::SpawnError(format!("PTY open failed: {e}")));
             return;
         }
@@ -89,13 +95,14 @@ async fn runner_task(
             } else {
                 msg
             };
-            eprintln!("[runner] spawn failed: {friendly}");
             let _ = tx.send(RunnerEvent::SpawnError(friendly));
             return;
         }
     };
 
-    eprintln!("[runner] spawned claude pid={:?}", child.process_id());
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!("[runner] spawned claude pid={:?}\r\n", child.process_id()).into_bytes(),
+    ));
 
     // Clone the killer handle so we can signal the child from the select arm
     // without holding the child borrow (which is blocked in wait()).
@@ -175,17 +182,12 @@ async fn runner_task(
     });
 
     let (was_killed, exit_code) = tokio::select! {
-        result = done_rx => {
-            eprintln!("[runner] claude exited naturally");
-            (false, Some(result.unwrap_or(1)))
-        }
+        result = done_rx => (false, Some(result.unwrap_or(1))),
         _ = kill_rx => (true, None),
     };
 
     if was_killed {
-        eprintln!("[runner] killing claude");
         let _ = killer.kill();
-        eprintln!("[runner] claude killed");
     }
 
     // Wait for the reader to drain all remaining PTY output before sending Exited.

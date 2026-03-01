@@ -849,10 +849,37 @@ impl App {
             self.runner_tabs[tab_idx].parser.process(&chunk);
         }
 
-        // Complete signal: transition to Done and refresh display.
+        // Complete signal handling.
+        //
+        // Three sub-cases based on (auto_continue, done):
+        //   auto_continue=false (any done): mark Done immediately — original behavior.
+        //   auto_continue=true, done=false: sentinel arrived, process still running;
+        //     decide now — spawn next or mark Done.
+        //   auto_continue=true, done=true: defer all state changes to the done block below
+        //     so the done block can read the Running iteration and run the auto-loop.
         if complete {
-            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
-            self.load_current_workflow();
+            let is_auto = self.runner_tabs[tab_idx].auto_continue;
+            if is_auto && !done {
+                // Sentinel received; process still running. Decide now.
+                self.load_current_workflow();
+                let workflow_name = self.runner_tabs[tab_idx].workflow_name.clone();
+                let workflow_dir = self.store.workflow_dir(&workflow_name);
+                let tab_workflow = Workflow::load(&workflow_dir).ok();
+                let is_complete =
+                    tab_workflow.as_ref().map(|w| w.is_complete()).unwrap_or(false);
+                if is_complete {
+                    self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                } else {
+                    // Spawn next immediately; old process will exit on its own.
+                    // Its Exited event goes on the old (now-replaced) channel and is discarded.
+                    self.spawn_next_iteration_at(tab_idx);
+                }
+            } else if !is_auto {
+                // Original behavior: mark Done right away.
+                self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                self.load_current_workflow();
+            }
+            // When is_auto && done: fall through; the done block below handles everything.
         }
 
         if done {
@@ -883,7 +910,7 @@ impl App {
                 // Reload plan from disk — ralph may have updated passes: true.
                 self.load_current_workflow();
 
-                // Determine whether to show ContinuePrompt or transition to Done.
+                // Determine whether to auto-loop, show ContinuePrompt, or transition to Done.
                 // Only act if still in Running state (not already Done from Complete signal or stop).
                 let iteration_opt = match self.runner_tabs[tab_idx].state {
                     RunnerTabState::Running { iteration } => Some(iteration),
@@ -899,25 +926,58 @@ impl App {
                     let is_complete =
                         tab_workflow.as_ref().map(|w| w.is_complete()).unwrap_or(false);
 
-                    if is_complete {
-                        self.runner_tabs[tab_idx].state = RunnerTabState::Done;
-                    } else if iteration >= MAX_ITERATIONS {
-                        let msg =
-                            format!("\r\nMax iterations ({MAX_ITERATIONS}) reached. Stopping.\r\n");
-                        self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
-                        self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                    let auto_continue = self.runner_tabs[tab_idx].auto_continue;
+
+                    if auto_continue {
+                        // Sentinel (complete) takes precedence: treat as success regardless of
+                        // exit code. Without sentinel, exit code 0 is success.
+                        let is_success =
+                            complete || matches!(exited_code, Some(Some(0)));
+
+                        if is_complete {
+                            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                        } else if is_success {
+                            // Success: spawn next iteration immediately.
+                            self.spawn_next_iteration_at(tab_idx);
+                        } else if iteration >= MAX_ITERATIONS {
+                            let msg = format!(
+                                "\r\n[runner] Max iterations ({MAX_ITERATIONS}) reached. Stopping.\r\n"
+                            );
+                            self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
+                            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                        } else {
+                            // Failure within limit: write retry log and spawn next.
+                            let exit_code =
+                                match exited_code { Some(Some(c)) => c, _ => 1u32 };
+                            let msg = format!(
+                                "\r\n[runner] Task failed (exit {exit_code}), retrying\u{2026} ({iteration}/{MAX_ITERATIONS})\r\n"
+                            );
+                            self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
+                            self.spawn_next_iteration_at(tab_idx);
+                        }
                     } else {
-                        // Natural exit within limit — ask user whether to continue.
-                        let next = tab_workflow
-                            .as_ref()
-                            .and_then(|w| w.next_task())
-                            .map(|t| (t.id.clone(), t.title.clone()))
-                            .unwrap_or_else(|| ("?".to_string(), "unknown".to_string()));
-                        self.dialog = Some(Dialog::ContinuePrompt {
-                            next_id: next.0,
-                            next_title: next.1,
-                        });
-                        // Keep Running { iteration } while awaiting the user's decision.
+                        // auto_continue=false: original ContinuePrompt behavior.
+                        if is_complete {
+                            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                        } else if iteration >= MAX_ITERATIONS {
+                            let msg = format!(
+                                "\r\nMax iterations ({MAX_ITERATIONS}) reached. Stopping.\r\n"
+                            );
+                            self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
+                            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                        } else {
+                            // Natural exit within limit — ask user whether to continue.
+                            let next = tab_workflow
+                                .as_ref()
+                                .and_then(|w| w.next_task())
+                                .map(|t| (t.id.clone(), t.title.clone()))
+                                .unwrap_or_else(|| ("?".to_string(), "unknown".to_string()));
+                            self.dialog = Some(Dialog::ContinuePrompt {
+                                next_id: next.0,
+                                next_title: next.1,
+                            });
+                            // Keep Running { iteration } while awaiting the user's decision.
+                        }
                     }
                 }
             }
@@ -1029,8 +1089,13 @@ impl App {
         if self.active_tab == 0 {
             return;
         }
-        let tab_idx = self.active_tab - 1;
+        self.spawn_next_iteration_at(self.active_tab - 1);
+    }
 
+    /// Spawns the next claude iteration on the runner tab at `tab_idx`.
+    /// Increments the iteration counter and replaces the subprocess channels.
+    /// Requires the tab to be in `Running { iteration }` state; returns early otherwise.
+    fn spawn_next_iteration_at(&mut self, tab_idx: usize) {
         // Extract workflow_name and iteration without holding a borrow.
         let (name, iteration) = {
             let Some(tab) = self.runner_tabs.get(tab_idx) else {

@@ -110,8 +110,8 @@ async fn runner_task(
 pub struct App {
     pub running: bool,
     pub store: Store,
-    pub plans: Vec<String>,
-    pub selected_plan: Option<usize>,
+    pub workflows: Vec<String>,
+    pub selected_workflow: Option<usize>,
     pub current_workflow: Option<Workflow>,
     pub app_state: AppState,
     pub dialog: Option<Dialog>,
@@ -124,13 +124,13 @@ pub struct App {
 
 impl App {
     pub fn new(store: Store) -> Self {
-        let plans = store.list_plans();
-        let selected_plan = if plans.is_empty() { None } else { Some(0) };
+        let workflows = store.list_workflows();
+        let selected_workflow = if workflows.is_empty() { None } else { Some(0) };
         let mut app = App {
             running: true,
             store,
-            plans,
-            selected_plan,
+            workflows,
+            selected_workflow,
             current_workflow: None,
             app_state: AppState::Idle,
             dialog: None,
@@ -192,14 +192,14 @@ impl App {
     }
 
     fn edit_current_plan(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let Some(idx) = self.selected_plan else {
+        let Some(idx) = self.selected_workflow else {
             return Ok(());
         };
-        let Some(name) = self.plans.get(idx).cloned() else {
+        let Some(name) = self.workflows.get(idx).cloned() else {
             return Ok(());
         };
 
-        let prd_path = self.store.plan_dir(&name).join("prd.json");
+        let prd_path = self.store.workflow_dir(&name).join("prd.json");
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
 
         // Suspend TUI: disable raw mode and leave alternate screen.
@@ -254,12 +254,12 @@ impl App {
         // DeletePlan confirmation: y confirms, any other key cancels.
         if let Some(Dialog::DeletePlan { name }) = &self.dialog {
             let name = name.clone();
-            let old_idx = self.selected_plan;
+            let old_idx = self.selected_workflow;
             self.dialog = None;
             if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
-                let dir = self.store.plan_dir(&name);
+                let dir = self.store.workflow_dir(&name);
                 let _ = std::fs::remove_dir_all(dir);
-                self.refresh_plans_after_delete(old_idx);
+                self.refresh_workflows_after_delete(old_idx);
             }
             return;
         }
@@ -295,16 +295,16 @@ impl App {
                     }
                     return;
                 }
-                match self.store.create_plan(&input) {
+                match self.store.create_workflow(&input) {
                     Ok(()) => {
                         self.dialog = None;
-                        self.refresh_plans_and_focus(&input);
+                        self.refresh_workflows_and_focus(&input);
                     }
                     Err(e) => {
                         let msg = e.to_string();
                         if let Some(Dialog::NewPlan { error, .. }) = &mut self.dialog {
                             *error = if msg.contains("already exists") {
-                                Some("Plan already exists".to_string())
+                                Some("Workflow already exists".to_string())
                             } else {
                                 Some(msg)
                             };
@@ -328,56 +328,56 @@ impl App {
     }
 
     fn open_delete_plan_dialog(&mut self) {
-        let Some(idx) = self.selected_plan else {
+        let Some(idx) = self.selected_workflow else {
             return;
         };
-        let Some(name) = self.plans.get(idx).cloned() else {
+        let Some(name) = self.workflows.get(idx).cloned() else {
             return;
         };
         self.dialog = Some(Dialog::DeletePlan { name });
     }
 
-    fn refresh_plans_after_delete(&mut self, old_idx: Option<usize>) {
-        self.plans = self.store.list_plans();
-        self.selected_plan = if self.plans.is_empty() {
+    fn refresh_workflows_after_delete(&mut self, old_idx: Option<usize>) {
+        self.workflows = self.store.list_workflows();
+        self.selected_workflow = if self.workflows.is_empty() {
             None
         } else {
-            Some(old_idx.map(|i| i.min(self.plans.len() - 1)).unwrap_or(0))
+            Some(old_idx.map(|i| i.min(self.workflows.len() - 1)).unwrap_or(0))
         };
         self.load_current_workflow();
     }
 
-    fn refresh_plans_and_focus(&mut self, name: &str) {
-        self.plans = self.store.list_plans();
-        self.selected_plan = self.plans.iter().position(|p| p == name);
-        if self.selected_plan.is_none() && !self.plans.is_empty() {
-            self.selected_plan = Some(0);
+    fn refresh_workflows_and_focus(&mut self, name: &str) {
+        self.workflows = self.store.list_workflows();
+        self.selected_workflow = self.workflows.iter().position(|p| p == name);
+        if self.selected_workflow.is_none() && !self.workflows.is_empty() {
+            self.selected_workflow = Some(0);
         }
         self.load_current_workflow();
     }
 
     fn load_current_workflow(&mut self) {
-        self.current_workflow = self.selected_plan.and_then(|i| {
-            let name = self.plans.get(i)?;
-            let dir = self.store.plan_dir(name);
+        self.current_workflow = self.selected_workflow.and_then(|i| {
+            let name = self.workflows.get(i)?;
+            let dir = self.store.workflow_dir(name);
             Workflow::load(&dir).ok()
         });
     }
 
     fn move_up(&mut self) {
-        if let Some(i) = self.selected_plan
+        if let Some(i) = self.selected_workflow
             && i > 0
         {
-            self.selected_plan = Some(i - 1);
+            self.selected_workflow = Some(i - 1);
         }
         self.load_current_workflow();
     }
 
     fn move_down(&mut self) {
-        if let Some(i) = self.selected_plan
-            && i + 1 < self.plans.len()
+        if let Some(i) = self.selected_workflow
+            && i + 1 < self.workflows.len()
         {
-            self.selected_plan = Some(i + 1);
+            self.selected_workflow = Some(i + 1);
         }
         self.load_current_workflow();
     }
@@ -501,10 +501,10 @@ impl App {
     }
 
     fn start_runner(&mut self) {
-        let Some(idx) = self.selected_plan else {
+        let Some(idx) = self.selected_workflow else {
             return;
         };
-        let Some(name) = self.plans.get(idx).cloned() else {
+        let Some(name) = self.workflows.get(idx).cloned() else {
             return;
         };
 
@@ -515,7 +515,7 @@ impl App {
             return;
         }
 
-        let plan_dir = self.store.plan_dir(&name);
+        let plan_dir = self.store.workflow_dir(&name);
         let repo_root = self.store.root().to_path_buf();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
@@ -530,10 +530,10 @@ impl App {
     /// Spawns the next claude iteration after the user confirms via the ContinuePrompt dialog.
     /// Increments the current iteration counter and starts a new subprocess.
     fn spawn_next_iteration(&mut self) {
-        let Some(idx) = self.selected_plan else {
+        let Some(idx) = self.selected_workflow else {
             return;
         };
-        let Some(name) = self.plans.get(idx).cloned() else {
+        let Some(name) = self.workflows.get(idx).cloned() else {
             return;
         };
 
@@ -542,7 +542,7 @@ impl App {
             _ => return,
         };
 
-        let plan_dir = self.store.plan_dir(&name);
+        let plan_dir = self.store.workflow_dir(&name);
         let repo_root = self.store.root().to_path_buf();
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();

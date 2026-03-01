@@ -18,27 +18,27 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    // Top row: Plans (~25%) | Tasks (~75%)
+    // Top row: Workflows (~25%) | Tasks (~75%)
     let top = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(vertical[0]);
 
-    // Plans panel
-    let plans_title = format!("Plans ({})", app.plans.len());
+    // Workflows panel
+    let plans_title = format!("Plans ({})", app.workflows.len());
     let plans_block = Block::default().borders(Borders::ALL).title(plans_title);
 
-    if app.plans.is_empty() {
+    if app.workflows.is_empty() {
         let empty_msg =
             Paragraph::new("No plans. Press [n] to create one.").block(plans_block);
         frame.render_widget(empty_msg, top[0]);
     } else {
         let items: Vec<ListItem> =
-            app.plans.iter().map(|name| ListItem::new(name.as_str())).collect();
+            app.workflows.iter().map(|name| ListItem::new(name.as_str())).collect();
         let list = List::new(items)
             .block(plans_block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        let mut list_state = ListState::default().with_selected(app.selected_plan);
+        let mut list_state = ListState::default().with_selected(app.selected_workflow);
         frame.render_stateful_widget(list, top[0], &mut list_state);
     }
 

@@ -9,18 +9,43 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
-use crate::ralph::workflow::Workflow;
 use crate::ralph::runner::RunnerEvent;
 use crate::ralph::store::Store;
+use crate::ralph::workflow::Workflow;
 
 // Maximum number of ralph loop iterations before the loop stops automatically.
 // TODO: make configurable
 const MAX_ITERATIONS: u32 = 10;
 
-pub enum AppState {
-    Idle,
+/// Per-runner tab state.
+pub enum RunnerTabState {
     Running { iteration: u32 },
-    Complete,
+    Done,
+    Error(String),
+}
+
+/// Holds all state for a single runner tab.
+pub struct RunnerTab {
+    pub workflow_name: String,
+    /// Capped at 1000 lines; oldest lines are dropped when the cap is exceeded.
+    pub log_lines: Vec<String>,
+    pub state: RunnerTabState,
+    pub runner_rx: Option<UnboundedReceiver<RunnerEvent>>,
+    pub runner_kill_tx: Option<oneshot::Sender<()>>,
+    /// Sender used to deliver stdin lines to the claude subprocess (set in TASK-002).
+    pub stdin_tx: Option<UnboundedSender<String>>,
+    pub input_buffer: String,
+    /// Scroll offset for the log view (0 = auto-scroll to bottom).
+    pub log_scroll: usize,
+}
+
+impl RunnerTab {
+    fn push_log(&mut self, line: String) {
+        self.log_lines.push(line);
+        if self.log_lines.len() > 1000 {
+            self.log_lines.remove(0);
+        }
+    }
 }
 
 pub enum Dialog {
@@ -32,19 +57,23 @@ pub enum Dialog {
 
 /// Spawns `claude --agent ralph` and streams output lines back via `tx`.
 /// Listens on `kill_rx` for an early termination signal.
+/// Lines received on `stdin_rx` are forwarded (with a trailing `\n`) to the
+/// child's stdin pipe.
 async fn runner_task(
     plan_dir: PathBuf,
     repo_root: PathBuf,
     tx: UnboundedSender<RunnerEvent>,
     kill_rx: oneshot::Receiver<()>,
+    mut stdin_rx: UnboundedReceiver<String>,
 ) {
     use std::process::Stdio;
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     let mut child = match tokio::process::Command::new("claude")
         .args(["--agent", "ralph", "Implement the next task."])
         .current_dir(&repo_root)
         .env("RALPH_PLAN_DIR", &plan_dir)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -60,8 +89,22 @@ async fn runner_task(
         }
     };
 
+    let child_stdin = child.stdin.take().expect("stdin piped");
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
+
+    // Detached task: forward lines from stdin_rx to the child's stdin pipe.
+    // Exits silently when the channel closes or a write fails.
+    drop(tokio::spawn(async move {
+        let mut writer = child_stdin;
+        while let Some(line) = stdin_rx.recv().await {
+            let mut data = line;
+            data.push('\n');
+            if writer.write_all(data.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    }));
 
     let tx_stdout = tx.clone();
     let stdout_task = tokio::spawn(async move {
@@ -113,13 +156,15 @@ pub struct App {
     pub workflows: Vec<String>,
     pub selected_workflow: Option<usize>,
     pub current_workflow: Option<Workflow>,
-    pub app_state: AppState,
+    /// All open runner tabs (tab 0 is the Workflows tab, not stored here).
+    pub runner_tabs: Vec<RunnerTab>,
+    /// 0 = Workflows tab; 1..=runner_tabs.len() = runner tab at index active_tab-1.
+    pub active_tab: usize,
+    /// When true the next keypress is interpreted as a tab navigation chord.
+    pub tab_nav_pending: bool,
     pub dialog: Option<Dialog>,
     pub status_message: Option<String>,
     pub status_message_expires: Option<Instant>,
-    pub log_lines: Vec<String>,
-    pub runner_rx: Option<UnboundedReceiver<RunnerEvent>>,
-    pub runner_kill_tx: Option<oneshot::Sender<()>>,
 }
 
 impl App {
@@ -132,13 +177,12 @@ impl App {
             workflows,
             selected_workflow,
             current_workflow: None,
-            app_state: AppState::Idle,
+            runner_tabs: Vec::new(),
+            active_tab: 0,
+            tab_nav_pending: false,
             dialog: None,
             status_message: None,
             status_message_expires: None,
-            log_lines: Vec::new(),
-            runner_rx: None,
-            runner_kill_tx: None,
         };
         app.load_current_workflow();
         app
@@ -147,7 +191,7 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while self.running {
             self.check_status_timeout();
-            self.drain_runner_channel();
+            self.drain_runner_channels();
             if let Err(e) = terminal.draw(|frame| crate::ui::draw(frame, self)) {
                 self.display_error(e.to_string());
             }
@@ -170,8 +214,14 @@ impl App {
         {
             if self.dialog.is_some() {
                 self.handle_dialog_key(key.code);
-            } else {
+            } else if self.tab_nav_pending {
+                // Consume the chord: always clear the flag, then act.
+                self.tab_nav_pending = false;
+                self.handle_tab_nav_key(key.code);
+            } else if self.active_tab == 0 {
+                // Workflows tab keybindings.
                 match key.code {
+                    KeyCode::Char('t') => self.tab_nav_pending = true,
                     KeyCode::Char('q') => self.running = false,
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         self.running = false;
@@ -186,9 +236,137 @@ impl App {
                     KeyCode::Char('?') => self.open_help_dialog(),
                     _ => {}
                 }
+            } else {
+                // Runner tab keybindings.
+                match key.code {
+                    KeyCode::Char('t') => self.tab_nav_pending = true,
+                    KeyCode::Char('q') => self.running = false,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        self.running = false;
+                    }
+                    KeyCode::Char('s') => self.stop_runner(),
+                    // Close a Done/Error runner tab; refuse if still Running.
+                    KeyCode::Char('x') => {
+                        let tab_idx = self.active_tab - 1;
+                        let is_running = self
+                            .runner_tabs
+                            .get(tab_idx)
+                            .map(|t| matches!(t.state, RunnerTabState::Running { .. }))
+                            .unwrap_or(false);
+                        if is_running {
+                            self.status_message =
+                                Some("Stop the runner first [s]".to_string());
+                            self.status_message_expires =
+                                Some(Instant::now() + Duration::from_secs(2));
+                        } else if self.runner_tabs.get(tab_idx).is_some() {
+                            self.runner_tabs.remove(tab_idx);
+                            // Move to the previous tab; saturating_sub(1) gives 0 (Workflows)
+                            // when active_tab was 1 (the only runner tab).
+                            self.active_tab = self.active_tab.saturating_sub(1);
+                        }
+                    }
+                    // Log scroll: Up/k scroll up (toward older lines), Down/j scroll down.
+                    // log_scroll == 0 means auto-scroll (always show newest line).
+                    // log_scroll == N means show the line N positions from the bottom.
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx)
+                            && !tab.log_lines.is_empty()
+                        {
+                            let last = tab.log_lines.len() - 1;
+                            tab.log_scroll = (tab.log_scroll + 1).min(last);
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.log_scroll = tab.log_scroll.saturating_sub(1);
+                        }
+                    }
+                    // End or G re-enables auto-scroll.
+                    KeyCode::End | KeyCode::Char('G') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.log_scroll = 0;
+                        }
+                    }
+                    // Input buffer: Backspace removes last char.
+                    KeyCode::Backspace => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.input_buffer.pop();
+                        }
+                    }
+                    // Input buffer: Enter sends trimmed buffer via stdin_tx (if active).
+                    KeyCode::Enter => {
+                        let tab_idx = self.active_tab - 1;
+                        // Extract result inside the borrow scope so self.status_message
+                        // can be set after the borrow on runner_tabs is released.
+                        let error_msg = self.runner_tabs.get_mut(tab_idx).and_then(|tab| {
+                            let trimmed = tab.input_buffer.trim().to_string();
+                            tab.input_buffer.clear();
+                            if let Some(tx) = &tab.stdin_tx {
+                                let _ = tx.send(trimmed);
+                                None
+                            } else {
+                                Some("Runner is not active".to_string())
+                            }
+                        });
+                        if let Some(msg) = error_msg {
+                            self.status_message = Some(msg);
+                            self.status_message_expires =
+                                Some(Instant::now() + Duration::from_secs(2));
+                        }
+                    }
+                    // Input buffer: Esc clears without sending.
+                    KeyCode::Esc => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.input_buffer.clear();
+                        }
+                    }
+                    // Input buffer: append any remaining printable char.
+                    // Specific chars (t/q/s/k/j/G and Ctrl+C) are caught by earlier arms
+                    // so they never reach here.
+                    KeyCode::Char(c) if !c.is_control() => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.input_buffer.push(c);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         Ok(())
+    }
+
+    /// Handles the second key of a `t`-prefix tab navigation chord.
+    ///
+    /// Digits `1`–`9` jump to the tab at index `digit − 1` (0 = Workflows).
+    /// `Left`/`Right` cycle through all tabs with wrapping.
+    /// Any other key is silently ignored (flag was already cleared by the caller).
+    fn handle_tab_nav_key(&mut self, code: KeyCode) {
+        let total_tabs = 1 + self.runner_tabs.len(); // Workflows tab + runner tabs
+        match code {
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let idx = (c as usize) - ('1' as usize); // digit '1' → 0, '9' → 8
+                if idx < total_tabs {
+                    self.active_tab = idx;
+                }
+            }
+            KeyCode::Left => {
+                self.active_tab = if self.active_tab == 0 {
+                    total_tabs - 1
+                } else {
+                    self.active_tab - 1
+                };
+            }
+            KeyCode::Right => {
+                self.active_tab = (self.active_tab + 1) % total_tabs;
+            }
+            _ => {} // any other key: flag already cleared, no tab change
+        }
     }
 
     fn edit_current_plan(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -237,7 +415,7 @@ impl App {
             return;
         }
 
-        // ContinuePrompt: Y/Enter continues loop, any other key cancels to Idle.
+        // ContinuePrompt: Y/Enter continues loop, any other key cancels to Done.
         if let Some(Dialog::ContinuePrompt { .. }) = &self.dialog {
             self.dialog = None;
             match code {
@@ -245,7 +423,12 @@ impl App {
                     self.spawn_next_iteration();
                 }
                 _ => {
-                    self.app_state = AppState::Idle;
+                    // Mark the active runner tab as Done (runner already exited).
+                    if self.active_tab > 0
+                        && let Some(tab) = self.runner_tabs.get_mut(self.active_tab - 1)
+                    {
+                        tab.state = RunnerTabState::Done;
+                    }
                 }
             }
             return;
@@ -391,23 +574,34 @@ impl App {
         }
     }
 
-    fn drain_runner_channel(&mut self) {
-        if self.runner_rx.is_none() {
-            return;
+    /// Drains runner channels for all active runner tabs.
+    fn drain_runner_channels(&mut self) {
+        for tab_idx in 0..self.runner_tabs.len() {
+            if self.runner_tabs[tab_idx].runner_rx.is_none() {
+                continue;
+            }
+            self.drain_tab_channel(tab_idx);
         }
-        let mut lines = Vec::new();
+    }
+
+    /// Drains events from the channel of runner tab at `tab_idx` and processes them.
+    fn drain_tab_channel(&mut self, tab_idx: usize) {
+        // Collect events into local vecs to avoid simultaneous mutable borrows.
+        let mut lines: Vec<String> = Vec::new();
         let mut done = false;
         let mut complete = false;
         let mut spawn_error: Option<String> = None;
 
-        if let Some(rx) = &mut self.runner_rx {
+        {
+            let rx = match self.runner_tabs[tab_idx].runner_rx.as_mut() {
+                Some(r) => r,
+                None => return,
+            };
             loop {
                 use tokio::sync::mpsc::error::TryRecvError;
                 match rx.try_recv() {
                     Ok(RunnerEvent::Line(line)) => lines.push(line),
-                    Ok(RunnerEvent::Complete) => {
-                        complete = true;
-                    }
+                    Ok(RunnerEvent::Complete) => complete = true,
                     Ok(RunnerEvent::Exited) => {
                         done = true;
                         break;
@@ -424,66 +618,67 @@ impl App {
                     }
                 }
             }
-        }
+        } // rx borrow released
 
         for line in lines {
-            self.log_lines.push(line);
-            if self.log_lines.len() > 1000 {
-                self.log_lines.remove(0);
-            }
+            self.runner_tabs[tab_idx].push_log(line);
         }
 
-        // Complete signal: transition to Complete state and reload plan.
+        // Complete signal: transition to Done and refresh display.
         if complete {
-            self.app_state = AppState::Complete;
+            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
             self.load_current_workflow();
         }
 
         if done {
-            self.runner_rx = None;
-            self.runner_kill_tx = None;
+            self.runner_tabs[tab_idx].runner_rx = None;
+            self.runner_tabs[tab_idx].runner_kill_tx = None;
+            self.runner_tabs[tab_idx].stdin_tx = None;
+            self.runner_tabs[tab_idx].push_log("--- Runner exited ---".to_string());
 
             if let Some(msg) = spawn_error {
-                self.status_message = Some(msg);
-                // Transition to Idle on spawn error if still Running.
-                if matches!(self.app_state, AppState::Running { .. }) {
-                    self.app_state = AppState::Idle;
-                }
+                let error_msg = msg.clone();
+                self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg);
+                self.status_message = Some(error_msg);
             } else {
                 // Reload plan from disk — ralph may have updated passes: true.
                 self.load_current_workflow();
 
-                // If already Complete (via RunnerEvent::Complete), stay Complete.
-                // If app_state is Idle (manual stop via [s]), no overlay is shown.
-                if !matches!(self.app_state, AppState::Complete)
-                    && let AppState::Running { iteration } = self.app_state
-                {
-                    let is_complete = self
-                        .current_workflow
-                        .as_ref()
-                        .map(|w| w.is_complete())
-                        .unwrap_or(false);
+                // Determine whether to show ContinuePrompt or transition to Done.
+                // Only act if still in Running state (not already Done from Complete signal or stop).
+                let iteration_opt = match self.runner_tabs[tab_idx].state {
+                    RunnerTabState::Running { iteration } => Some(iteration),
+                    _ => None,
+                };
+
+                if let Some(iteration) = iteration_opt {
+                    // Load the specific workflow for this runner tab (may differ from selected).
+                    let workflow_name = self.runner_tabs[tab_idx].workflow_name.clone();
+                    let workflow_dir = self.store.workflow_dir(&workflow_name);
+                    let tab_workflow = Workflow::load(&workflow_dir).ok();
+
+                    let is_complete =
+                        tab_workflow.as_ref().map(|w| w.is_complete()).unwrap_or(false);
+
                     if is_complete {
-                        // Plan became complete after reload — no overlay needed.
-                        self.app_state = AppState::Complete;
+                        self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     } else if iteration >= MAX_ITERATIONS {
-                        self.log_lines.push(format!(
-                            "Max iterations ({MAX_ITERATIONS}) reached. Stopping."
-                        ));
-                        if self.log_lines.len() > 1000 {
-                            self.log_lines.remove(0);
-                        }
-                        self.app_state = AppState::Idle;
+                        let msg =
+                            format!("Max iterations ({MAX_ITERATIONS}) reached. Stopping.");
+                        self.runner_tabs[tab_idx].push_log(msg);
+                        self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     } else {
-                        // Natural exit, plan not complete, within iteration limit.
-                        // Show continue prompt so the user decides whether to proceed.
-                        let next = self.current_workflow.as_ref().and_then(|w| w.next_task());
-                        let (next_id, next_title) = next
+                        // Natural exit within limit — ask user whether to continue.
+                        let next = tab_workflow
+                            .as_ref()
+                            .and_then(|w| w.next_task())
                             .map(|t| (t.id.clone(), t.title.clone()))
                             .unwrap_or_else(|| ("?".to_string(), "unknown".to_string()));
-                        self.dialog = Some(Dialog::ContinuePrompt { next_id, next_title });
-                        // Keep AppState::Running { iteration } while awaiting
-                        // user decision — will be incremented if they say Y.
+                        self.dialog = Some(Dialog::ContinuePrompt {
+                            next_id: next.0,
+                            next_title: next.1,
+                        });
+                        // Keep Running { iteration } while awaiting the user's decision.
                     }
                 }
             }
@@ -491,13 +686,21 @@ impl App {
     }
 
     fn stop_runner(&mut self) {
-        if !matches!(self.app_state, AppState::Running { .. }) {
+        if self.active_tab == 0 {
             return;
         }
-        if let Some(kill_tx) = self.runner_kill_tx.take() {
+        let tab_idx = self.active_tab - 1;
+        let Some(tab) = self.runner_tabs.get_mut(tab_idx) else {
+            return;
+        };
+        if !matches!(tab.state, RunnerTabState::Running { .. }) {
+            return;
+        }
+        if let Some(kill_tx) = tab.runner_kill_tx.take() {
             let _ = kill_tx.send(());
         }
-        self.app_state = AppState::Idle;
+        // Mark Done immediately so drain_tab_channel skips the ContinuePrompt when Exited arrives.
+        tab.state = RunnerTabState::Done;
     }
 
     fn start_runner(&mut self) {
@@ -508,10 +711,12 @@ impl App {
             return;
         };
 
-        if matches!(self.app_state, AppState::Running { .. }) {
+        // Prevent starting a second runner for the same workflow while one is active.
+        if self.runner_tabs.iter().any(|t| {
+            t.workflow_name == name && matches!(t.state, RunnerTabState::Running { .. })
+        }) {
             self.status_message = Some("Already running".to_string());
-            self.status_message_expires =
-                Some(Instant::now() + Duration::from_secs(2));
+            self.status_message_expires = Some(Instant::now() + Duration::from_secs(2));
             return;
         }
 
@@ -520,26 +725,62 @@ impl App {
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        self.runner_rx = Some(rx);
-        self.runner_kill_tx = Some(kill_tx);
-        self.app_state = AppState::Running { iteration: 1 };
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-        drop(tokio::spawn(runner_task(plan_dir, repo_root, tx, kill_rx)));
+        // Reuse an existing Done/Error tab for this workflow rather than accumulating tabs.
+        let reuse_idx = self.runner_tabs.iter().position(|t| {
+            t.workflow_name == name
+                && !matches!(t.state, RunnerTabState::Running { .. })
+        });
+
+        if let Some(reuse) = reuse_idx {
+            let tab = &mut self.runner_tabs[reuse];
+            tab.log_lines.clear();
+            tab.log_scroll = 0;
+            tab.input_buffer.clear();
+            tab.state = RunnerTabState::Running { iteration: 1 };
+            tab.runner_rx = Some(rx);
+            tab.runner_kill_tx = Some(kill_tx);
+            tab.stdin_tx = Some(stdin_tx);
+            self.active_tab = reuse + 1; // active_tab is 1-indexed for runner tabs
+        } else {
+            let tab = RunnerTab {
+                workflow_name: name,
+                log_lines: Vec::new(),
+                state: RunnerTabState::Running { iteration: 1 },
+                runner_rx: Some(rx),
+                runner_kill_tx: Some(kill_tx),
+                stdin_tx: Some(stdin_tx),
+                input_buffer: String::new(),
+                log_scroll: 0,
+            };
+            self.runner_tabs.push(tab);
+            self.active_tab = self.runner_tabs.len(); // runner tabs are 1-indexed in active_tab
+        }
+
+        drop(tokio::spawn(runner_task(
+            plan_dir, repo_root, tx, kill_rx, stdin_rx,
+        )));
     }
 
     /// Spawns the next claude iteration after the user confirms via the ContinuePrompt dialog.
-    /// Increments the current iteration counter and starts a new subprocess.
+    /// Increments the current iteration counter and starts a new subprocess on the active runner tab.
     fn spawn_next_iteration(&mut self) {
-        let Some(idx) = self.selected_workflow else {
+        if self.active_tab == 0 {
             return;
-        };
-        let Some(name) = self.workflows.get(idx).cloned() else {
-            return;
-        };
+        }
+        let tab_idx = self.active_tab - 1;
 
-        let iteration = match self.app_state {
-            AppState::Running { iteration } => iteration,
-            _ => return,
+        // Extract workflow_name and iteration without holding a borrow.
+        let (name, iteration) = {
+            let Some(tab) = self.runner_tabs.get(tab_idx) else {
+                return;
+            };
+            let iteration = match tab.state {
+                RunnerTabState::Running { iteration } => iteration,
+                _ => return,
+            };
+            (tab.workflow_name.clone(), iteration)
         };
 
         let plan_dir = self.store.workflow_dir(&name);
@@ -547,10 +788,17 @@ impl App {
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        self.runner_rx = Some(rx);
-        self.runner_kill_tx = Some(kill_tx);
-        self.app_state = AppState::Running { iteration: iteration + 1 };
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-        drop(tokio::spawn(runner_task(plan_dir, repo_root, tx, kill_rx)));
+        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+            tab.runner_rx = Some(rx);
+            tab.runner_kill_tx = Some(kill_tx);
+            tab.stdin_tx = Some(stdin_tx);
+            tab.state = RunnerTabState::Running { iteration: iteration + 1 };
+        }
+
+        drop(tokio::spawn(runner_task(
+            plan_dir, repo_root, tx, kill_rx, stdin_rx,
+        )));
     }
 }

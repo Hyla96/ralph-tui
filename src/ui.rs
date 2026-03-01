@@ -2,7 +2,7 @@ use crate::app::App;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
@@ -41,7 +41,35 @@ pub fn draw(frame: &mut Frame, app: &App) {
         frame.render_stateful_widget(list, top[0], &mut list_state);
     }
 
-    frame.render_widget(Block::default().borders(Borders::ALL).title("Stories"), top[1]);
+    // Stories panel
+    match &app.current_plan {
+        None => {
+            let block = Block::default().borders(Borders::ALL).title("Stories");
+            frame.render_widget(Paragraph::new("Select a plan").block(block), top[1]);
+        }
+        Some(plan) => {
+            let title = format!("Stories ({}/{})", plan.done_count(), plan.total_count());
+            let block = Block::default().borders(Borders::ALL).title(title);
+            let items: Vec<ListItem> = plan
+                .prd
+                .user_stories
+                .iter()
+                .map(|story| {
+                    let check = if story.passes { "✓" } else { "○" };
+                    let text =
+                        format!("{} [{}] {}: {}", check, story.priority, story.id, story.title);
+                    let style = if story.passes {
+                        Style::default().fg(Color::DarkGray)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(text).style(style)
+                })
+                .collect();
+            let list = List::new(items).block(block);
+            frame.render_widget(list, top[1]);
+        }
+    }
     frame.render_widget(Block::default().borders(Borders::ALL).title("Log"), vertical[1]);
 
     // Status bar: no border

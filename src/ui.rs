@@ -121,47 +121,50 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status_text), vertical[2]);
 }
 
-/// Renders an active runner tab: log panel (top) | status bar (bottom 1 line).
+/// Renders an active runner tab: log panel (top) | status line | input row (bottom).
 ///
-/// TASK-006 will restructure this into log view + status line + input row.
-/// TASK-007 will wire up the input buffer.
+/// Layout (from top to bottom):
+///   log view  — flexible height, scrollable; log_scroll==0 auto-scrolls to newest line
+///   status line — 1 line: shows Running/Done/Error state or a transient status message
+///   input row — 1 line: shows `> {input_buffer}` (buffer wired up in TASK-007)
+///
+/// TASK-007 will wire up the input buffer (printable chars, Backspace, Enter, Esc).
 fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
     let tab = match app.runner_tabs.get(app.active_tab - 1) {
         Some(t) => t,
         None => return,
     };
 
-    // Split: log panel (flexible) | status bar (1 line)
+    // Split: log panel (flexible) | status line (1 line) | input row (1 line)
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
-    // Log panel
-    let log_title = format!("Runner: {}", tab.workflow_name);
+    // Log panel — scroll-aware selection.
+    // log_scroll == 0 → auto-scroll (selected = last line).
+    // log_scroll == N → show the line N positions from the bottom.
+    let log_title = format!("Runner: {} — Up/k scroll up  End/G bottom", tab.workflow_name);
     let log_block = Block::default().borders(Borders::ALL).title(log_title);
     if tab.log_lines.is_empty() {
         frame.render_widget(log_block, layout[0]);
     } else {
+        let last = tab.log_lines.len() - 1;
+        let selected = last.saturating_sub(tab.log_scroll);
         let items: Vec<ListItem> =
             tab.log_lines.iter().map(|l| ListItem::new(l.as_str())).collect();
         let list = List::new(items).block(log_block);
-        // Auto-scroll to the bottom (TASK-006 will add manual scroll support).
-        let selected = Some(tab.log_lines.len().saturating_sub(1));
-        let mut log_state = ListState::default().with_selected(selected);
+        let mut log_state = ListState::default().with_selected(Some(selected));
         frame.render_stateful_widget(list, layout[0], &mut log_state);
     }
 
-    // Status bar: runner state hints.
+    // Status line: transient messages take priority; otherwise show runner state.
     let status_text = if let Some(msg) = &app.status_message {
         Line::from(Span::styled(msg.as_str(), Style::default().fg(Color::Red)))
     } else {
         match &tab.state {
             RunnerTabState::Running { iteration } => {
-                Line::from(format!(
-                    "[s]top  [q]uit  Running iteration {}/10\u{2026}",
-                    iteration
-                ))
+                Line::from(format!("[s]top  Running \u{2014} iteration {}/10", iteration))
             }
             RunnerTabState::Done => Line::from("[q]uit  Done"),
             RunnerTabState::Error(msg) => Line::from(Span::styled(
@@ -171,6 +174,10 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     frame.render_widget(Paragraph::new(status_text), layout[1]);
+
+    // Input row placeholder — TASK-007 will render `> {input_buffer}` and handle keystrokes.
+    let input_text = format!("> {}", tab.input_buffer);
+    frame.render_widget(Paragraph::new(input_text.as_str()), layout[2]);
 }
 
 /// Renders the single-line tab bar at the top of the screen.

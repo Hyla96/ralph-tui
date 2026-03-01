@@ -238,7 +238,6 @@ impl App {
                 }
             } else {
                 // Runner tab keybindings.
-                // TASK-006 adds log scroll (Up/Down/k/j/End/G).
                 // TASK-007 adds input buffer (printable chars, Backspace, Enter, Esc).
                 match key.code {
                     KeyCode::Char('t') => self.tab_nav_pending = true,
@@ -247,6 +246,31 @@ impl App {
                         self.running = false;
                     }
                     KeyCode::Char('s') => self.stop_runner(),
+                    // Log scroll: Up/k scroll up (toward older lines), Down/j scroll down.
+                    // log_scroll == 0 means auto-scroll (always show newest line).
+                    // log_scroll == N means show the line N positions from the bottom.
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx)
+                            && !tab.log_lines.is_empty()
+                        {
+                            let last = tab.log_lines.len() - 1;
+                            tab.log_scroll = (tab.log_scroll + 1).min(last);
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.log_scroll = tab.log_scroll.saturating_sub(1);
+                        }
+                    }
+                    // End or G re-enables auto-scroll.
+                    KeyCode::End | KeyCode::Char('G') => {
+                        let tab_idx = self.active_tab - 1;
+                        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                            tab.log_scroll = 0;
+                        }
+                    }
                     _ => {}
                 }
             }

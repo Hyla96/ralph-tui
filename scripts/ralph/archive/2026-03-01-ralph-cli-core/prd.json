@@ -1,0 +1,64 @@
+{
+  "project": "ralph-cli",
+  "branchName": "ralph-cli-agents-and-skills",
+  "description": "Agents & Skills Directory Management — bundle the ralph agent and skill definitions in the repo and expose a TUI screen to install/uninstall them to ~/.claude/",
+  "validationCommands": ["cargo build", "cargo clippy -- -D warnings"],
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Create agents/ and skills/ directory structure",
+      "description": "As a developer, I want the ralph agent and ralph-relevant skills committed to the repo so they are versioned alongside the CLI that uses them.",
+      "acceptanceCriteria": [
+        "agents/ralph.md exists — copied verbatim from ~/.claude/agents/ralph.md",
+        "skills/prd/SKILL.md exists — copied verbatim from ~/.claude/skills/prd/SKILL.md",
+        "skills/prd-synth/SKILL.md exists — copied verbatim from ~/.claude/skills/prd-synth/SKILL.md",
+        "agents/ and skills/ are NOT in .gitignore (they must be tracked)",
+        "cargo build passes",
+        "cargo clippy -- -D warnings passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Improve ralph agent for ralph-cli plan structure",
+      "description": "As ralph (the agent), I want my instructions to accurately reflect how ralph-cli manages plans so I can find prd.json and progress.txt via the RALPH_PLAN_DIR env var without guessing the wrong path.",
+      "acceptanceCriteria": [
+        "agents/ralph.md no longer references scripts/ralph/ anywhere",
+        "agents/ralph.md references $RALPH_PLAN_DIR/prd.json and $RALPH_PLAN_DIR/progress.txt throughout",
+        "An introductory note at the top of the Workflow section explains the RALPH_PLAN_DIR env var",
+        "The Rules section correctly states .ralph/plans/ is gitignored (not scripts/ralph/)",
+        "Workflow Step 5 clarifies the branch name is read from prd.branchName in $RALPH_PLAN_DIR/prd.json",
+        "cargo build passes",
+        "cargo clippy -- -D warnings passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "TUI Agents & Skills management screen",
+      "description": "As a user, I want to open an Agents & Skills screen from the main TUI view (via `a`) to see which agents and skills are available in the project, their install status in ~/.claude/, and install or remove them with a keypress.",
+      "acceptanceCriteria": [
+        "`a` keybinding from the main view opens the Agents & Skills screen (new AppMode variant)",
+        "Screen lists all agents found in agents/ with [installed] or [not installed] status",
+        "Screen lists all skills found in skills/ (dirs containing SKILL.md) with install status",
+        "Arrow keys navigate the list",
+        "`i` copies the selected agent/skill to ~/.claude/agents/<name>.md or ~/.claude/skills/<name>/SKILL.md, creating target dirs if needed, and refreshes status",
+        "`u` removes the selected agent/skill from ~/.claude/ and refreshes status",
+        "`Esc` or `q` returns to the main view",
+        "Status bar shows: [i] install  [u] uninstall  [Esc] back",
+        "If agents/ or skills/ dir doesn't exist, screen shows an empty state message instead of panicking",
+        "Install/uninstall errors are shown in a one-line error message below the list",
+        "dirs crate added to Cargo.toml if not already present (for home dir resolution)",
+        "cargo build passes",
+        "cargo clippy -- -D warnings passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

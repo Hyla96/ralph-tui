@@ -1,0 +1,135 @@
+{
+  "project": "ralph-cli",
+  "branchName": "tabbed-runner-ui",
+  "description": "Tabbed Runner UI with Claude Code Interaction - Replace single-pane UI with a tab-based layout supporting multiple simultaneous workflow runners, each with live log output and stdin input.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "Runner tab data model",
+      "description": "As a developer, I need a data structure to hold per-runner state so that multiple runners can coexist without sharing mutable fields.",
+      "acceptanceCriteria": [
+        "Add a `RunnerTab` struct in `app.rs` with fields: `workflow_name: String`, `log_lines: Vec<String>` (capped at 1000 lines, oldest dropped), `state: RunnerTabState` (enum: `Running { iteration: u32 }`, `Done`, `Error(String)`), `runner_rx: Option<UnboundedReceiver<RunnerEvent>>`, `runner_kill_tx: Option<oneshot::Sender<()>>`, `stdin_tx: Option<UnboundedSender<String>>`, `input_buffer: String`, `log_scroll: usize`",
+        "Remove flat `log_lines`, `runner_rx`, `runner_kill_tx`, and `app_state` fields from `App`; runner-specific state lives inside `RunnerTab`",
+        "Add `runner_tabs: Vec<RunnerTab>` and `active_tab: usize` (0 = Workflows tab) to `App`",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-002",
+      "title": "Pipe stdin to the claude subprocess",
+      "description": "As a developer, I need the claude subprocess to have a writable stdin pipe so the user's typed responses can be delivered to it.",
+      "acceptanceCriteria": [
+        "`runner_task` gains a `stdin_rx: UnboundedReceiver<String>` parameter",
+        "`Command::stdin(Stdio::piped())` is used; `child.stdin.take()` gives a writable handle",
+        "A dedicated Tokio task inside `runner_task` reads lines from `stdin_rx` and writes them (appending `\\n`) to the child's stdin handle using `tokio::io::AsyncWriteExt`",
+        "If the stdin channel closes or the write fails, the stdin task exits silently",
+        "The corresponding `UnboundedSender<String>` is stored in `RunnerTab::stdin_tx`",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-003",
+      "title": "Tab bar rendering",
+      "description": "As a user, I want to see all open tabs at the top of the screen so I know what is available and which tab is active.",
+      "acceptanceCriteria": [
+        "A single-line tab bar is drawn at the very top of the terminal",
+        "Tab 0 is always labelled `[Workflows]`",
+        "Each runner tab is labelled `[<workflow-name>]` while running, `[<workflow-name> ✓]` when Done, and `[<workflow-name> !]` on error",
+        "The active tab is highlighted (reversed/bold style)",
+        "If tabs overflow terminal width, visible tabs are cropped (no scrolling required)",
+        "The rest of the screen below the tab bar renders the content of the active tab",
+        "Typecheck passes",
+        "Verify visually in the running TUI"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-004",
+      "title": "Tab navigation with t-prefix chords",
+      "description": "As a user, I want to switch tabs with `t` + a digit or `t` + an arrow key so I can jump to any tab without leaving the keyboard home row.",
+      "acceptanceCriteria": [
+        "Pressing `t` sets `tab_nav_pending: bool` on `App` and waits for the next keypress",
+        "While `tab_nav_pending` is true: digit `1`–`9` switches to tab at index digit − 1 (out-of-range ignored); `Left`/`Right` arrow cycles to prev/next tab (wrapping); any other key clears the flag with no tab change",
+        "`tab_nav_pending` is cleared after any resolution (successful or not)",
+        "When active tab changes, the previous tab's input focus and state are preserved",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-005",
+      "title": "Workflows tab no regression",
+      "description": "As a user, I want the Workflows tab to look and behave exactly as before so that existing workflow management is not disrupted.",
+      "acceptanceCriteria": [
+        "When `active_tab == 0`, the full Workflows layout (workflow list left, tasks right, log panel, status bar) is rendered exactly as before",
+        "All existing keybindings (`n`, `d`, `r`, `s`, `e`, `?`, `q`, arrows) work normally while the Workflows tab is active",
+        "Pressing `r` on a selected workflow starts the runner AND switches `active_tab` to the newly created runner tab",
+        "Typecheck passes",
+        "Verify visually in the running TUI"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-006",
+      "title": "Runner tab log view with scroll support",
+      "description": "As a user, I want to see the live stdout/stderr of the running claude process in the runner tab so I can follow its progress.",
+      "acceptanceCriteria": [
+        "When active tab is a runner tab, the area below the tab bar is split: log view (available height minus 3 lines) on top, input row on bottom",
+        "Log lines are rendered newest-at-bottom (append style)",
+        "Log view auto-scrolls to the bottom as new lines arrive unless the user has manually scrolled up",
+        "User can scroll the log with `Up`/`Down` or `k`/`j`; scrolling up disables auto-scroll until `End` or `G` re-enables it",
+        "Runner tab shows a status line (e.g., `Running — iteration 2/10` or `Done`) above the input box",
+        "Typecheck passes",
+        "Verify visually in the running TUI"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-007",
+      "title": "Input field and send-to-claude",
+      "description": "As a user, I want a text input field at the bottom of the runner tab where I can type a response and press Enter to send it to Claude Code.",
+      "acceptanceCriteria": [
+        "Bottom row of every active runner tab shows `> ` followed by `input_buffer` content",
+        "While a runner tab is active (no dialog open): printable chars append to `input_buffer`; `Backspace` removes last char; `Enter` sends trimmed `input_buffer` via `stdin_tx` then clears it; `Esc` clears `input_buffer` without sending",
+        "Scroll keys (`Up`/`Down`, `k`/`j`) scroll the log and do not affect the input buffer",
+        "If `stdin_tx` is `None` (runner done), pressing Enter shows a transient status message 'Runner is not active' for 2 s",
+        "Typecheck passes",
+        "Verify visually in the running TUI: type a message and confirm it is delivered"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "TASK-008",
+      "title": "Runner tab lifecycle: create, done, and close",
+      "description": "As a user, I want runner tabs to be created automatically and persist with a Done indicator when the runner exits so I can review output after completion.",
+      "acceptanceCriteria": [
+        "When `start_runner` is called: if a Done/Error tab for that workflow exists it is reused (log cleared, state reset to `Running { iteration: 1 }`); otherwise a new `RunnerTab` is appended; `active_tab` is set to that tab",
+        "When runner exits via `RunnerEvent::Exited`: `runner_rx`, `runner_kill_tx`, `stdin_tx` set to `None`; `RunnerTab::state` → `Done` or `Error`; label gains ` ✓` / ` !`; final log line `'--- Runner exited ---'` appended; user stays on runner tab",
+        "User can close a Done/Error tab by pressing `x`; `active_tab` moves to previous tab (or 0)",
+        "Running tabs cannot be closed with `x`; transient status message 'Stop the runner first [s]' shown for 2 s",
+        "ContinuePrompt dialog works per runner tab (shown inside the runner tab)",
+        "Typecheck passes",
+        "Verify visually in the running TUI"
+      ],
+      "priority": 8,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

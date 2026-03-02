@@ -198,12 +198,20 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(pseudo_term, layout[0]);
     }
 
-    // Status line: transient messages take left side; task context on right.
-    // Running/Done states: left = keybindings + auto toggle, right = task context.
-    // Error state: left = keybindings (red), no right side.
+    // Status line: insert_mode takes priority; then transient messages; then state-based hints.
+    // Insert mode: left = INSERT indicator (green), no task context.
+    // Normal mode Running/Done: left = keybindings + auto toggle + [?]help, right = task context.
+    // Normal mode Error: left = keybindings (red) + [?]help, no right side.
     let bar_width = layout[1].width;
     let task_ctx = runner_tab_context(app, tab);
-    let status_text = if let Some(msg) = &app.status_message {
+    let insert_mode = tab.insert_mode;
+    let status_text = if insert_mode {
+        // INSERT mode indicator: show mode, suppress task context.
+        Line::from(Span::styled(
+            "-- INSERT --  [Esc] normal mode",
+            Style::default().fg(Color::Green),
+        ))
+    } else if let Some(msg) = &app.status_message {
         // Transient status message overrides the left side.
         let left = msg.as_str();
         let left_len = left.chars().count();
@@ -219,7 +227,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         match &tab.state {
             RunnerTabState::Running { .. } => {
                 let auto_label = if tab.auto_continue { "[a]uto:ON" } else { "[a]uto:OFF" };
-                let left = format!("[Ctrl+S]stop  {auto_label}");
+                let left = format!("[Ctrl+S]stop  {auto_label}  [?]help");
                 let left_len = left.chars().count();
                 let mut spans = vec![Span::raw(left)];
                 if let Some(ctx) = &task_ctx {
@@ -228,7 +236,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(spans)
             }
             RunnerTabState::Done => {
-                let left = "[x]close";
+                let left = "[x]close  [?]help";
                 let left_len = left.chars().count();
                 let mut spans = vec![Span::raw(left)];
                 if let Some(ctx) = &task_ctx {
@@ -238,7 +246,10 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
             }
             RunnerTabState::Error(_) => {
                 // Error message lives in the terminal output; status bar shows keybindings only.
-                Line::from(Span::styled("[x]close  [q]uit", Style::default().fg(Color::Red)))
+                Line::from(Span::styled(
+                    "[x]close  [q]quit  [?]help",
+                    Style::default().fg(Color::Red),
+                ))
             }
         }
     };

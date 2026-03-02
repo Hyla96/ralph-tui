@@ -487,20 +487,29 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
-    // 46 wide (2 border + 44 content), 11 tall (2 border + 9 keybinding rows)
-    let dialog_rect = centered_rect(46, 11, area);
+    // 52 wide (2 border + 50 content), 19 tall (2 border + 17 content rows)
+    let dialog_rect = centered_rect(52, 19, area);
     frame.render_widget(Clear, dialog_rect);
 
+    let header_style = Style::default().add_modifier(Modifier::BOLD);
     let lines = vec![
-        Line::from("  s         stop loop"),
-        Line::from("  a         toggle auto-continue"),
-        Line::from("  \u{2191}/k       scroll up"),
-        Line::from("  \u{2193}/j       scroll down"),
-        Line::from("  End/G     jump to bottom"),
-        Line::from("  x         close tab"),
-        Line::from("  t+1..9    switch tab"),
-        Line::from("  ?         this help"),
-        Line::from("  q         quit"),
+        Line::from(Span::styled("  -- Normal mode --", header_style)),
+        Line::from("  i           enter insert mode"),
+        Line::from("  Ctrl+S      stop loop"),
+        Line::from("  a           toggle auto-continue"),
+        Line::from("  \u{2191}/k         scroll up"),
+        Line::from("  \u{2193}/j         scroll down"),
+        Line::from("  End/G       jump to bottom"),
+        Line::from("  Tab         next tab"),
+        Line::from("  Shift+Tab   prev tab"),
+        Line::from("  t+1..9      switch tab by number"),
+        Line::from("  x           close tab"),
+        Line::from("  ?           this help"),
+        Line::from("  q           quit"),
+        Line::from(""),
+        Line::from(Span::styled("  -- Insert mode --", header_style)),
+        Line::from("  Esc         back to normal mode"),
+        Line::from("  Ctrl+C      send interrupt to PTY"),
     ];
     let block = Block::default().borders(Borders::ALL).title("Runner Help");
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);

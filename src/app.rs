@@ -639,7 +639,7 @@ impl App {
                         }
                     } else {
                         // Normal mode keybindings.
-                        // Keys NOT forwarded to PTY: i, t, q, Ctrl+C, s, x, a, ?, k/Up, j/Down, G/End.
+                        // Keys NOT forwarded to PTY: i, t, q, Ctrl+C, Ctrl+S, x, a, ?, k/Up, j/Down, G/End.
                         // All other keys are forwarded as raw bytes via key_to_pty_bytes.
                         match key.code {
                             KeyCode::Char('i') => {
@@ -653,7 +653,11 @@ impl App {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 self.running = false;
                             }
-                            KeyCode::Char('s') => self.stop_runner(),
+                            KeyCode::Char('s')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
+                                self.stop_runner()
+                            }
                             KeyCode::Char('a') => {
                                 if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
                                     tab.auto_continue = !tab.auto_continue;
@@ -676,7 +680,7 @@ impl App {
                                     .unwrap_or(false);
                                 if is_running {
                                     self.status_message =
-                                        Some("Stop the runner first [s]".to_string());
+                                        Some("Stop the runner first [Ctrl+S]".to_string());
                                     self.status_message_expires =
                                         Some(Instant::now() + Duration::from_secs(2));
                                 } else if self.runner_tabs.get(tab_idx).is_some() {

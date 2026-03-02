@@ -52,3 +52,7 @@ clean:
 # Copy agents and skills into ~/.claude
 set-resources:
     cp -rf ./resources/ ~/.claude/
+
+# Installs this app as `ralph-cli` command
+install:
+    cargo install --path .

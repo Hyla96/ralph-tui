@@ -94,7 +94,6 @@ Prefer these MCP tools when available:
 
 - **Serena**: Use for all code exploration and editing (symbol lookup, references, precise edits). Prefer over raw file reads when navigating code.
 - **Context7**: Use to fetch up-to-date documentation for third-party libraries before implementing against their APIs.
-- **Sequential Thinking**: Use when planning multi-step implementations or reasoning through tradeoffs before writing code.
 
 ## Rules
 

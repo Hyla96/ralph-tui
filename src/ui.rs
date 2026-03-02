@@ -1,6 +1,5 @@
 use crate::app::{
-    App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, RunnerTab, RunnerTabState,
-    StoryDetailField,
+    App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, RunnerTabState, StoryDetailField,
 };
 use crate::ralph::usage::UsageFile;
 use crate::ralph::workflow::Workflow;
@@ -108,8 +107,7 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
                 })
                 .unwrap_or_default();
 
-            let total_tokens =
-                usage_file.total.input_tokens + usage_file.total.output_tokens;
+            let total_tokens = usage_file.total.input_tokens + usage_file.total.output_tokens;
             let title = if total_tokens > 0 {
                 format!(
                     "Tasks ({}/{})  {}",
@@ -194,8 +192,9 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
 /// Renders an active runner tab: log panel (top) | status line (bottom).
 ///
 /// Layout (from top to bottom):
-///   log view  — flexible height, scrollable; log_scroll==0 auto-scrolls to newest line
-///   status line — 1 line: shows Running/Done/Error state or a transient status message
+///   task bar    — 1 row: task title left-aligned, counts right-aligned
+///   PTY viewport — flexible height, scrollable via vt100 scrollback
+///   buttons bar — 1 row: action keybindings only (no task context)
 ///
 /// Keyboard input is forwarded directly to the PTY as raw bytes (no input buffer row).
 fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
@@ -204,21 +203,85 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
-    // Split: log panel (flexible) | status line (1 line)
+    // 3-section layout: task bar (1 row) | PTY viewport (flexible) | buttons bar (1 row)
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    // Log panel — rendered by tui_term::widget::PseudoTerminal from the vt100 screen.
-    // The vt100 screen's scrollback position (set_scrollback) is updated by the key handlers
-    // so that PseudoTerminal renders the correct view (scrollback or live) without requiring
-    // a mutable App reference in draw. When log_scroll == 0 the live screen is shown;
-    // when log_scroll > 0 the screen is offset into the scrollback buffer.
-    let log_title_text = match (&tab.current_task_id, &tab.current_task_title) {
-        (Some(id), Some(title)) => format!("{id}: {title}"),
-        _ => format!("Runner: {}", tab.workflow_name),
+    // Task bar (layout[0]): task title left-aligned, counts (tasks/iter/tokens) right-aligned.
+    // For Error state: show "Runner: {workflow_name}" dimmed. Insert mode uses same as Running/Done.
+    let task_bar_width = layout[0].width;
+    let task_bar_line = match &tab.state {
+        RunnerTabState::Error(_) => Line::from(Span::styled(
+            format!("Runner: {}", tab.workflow_name),
+            Style::default().fg(Color::DarkGray),
+        )),
+        state => {
+            let iter_n = match state {
+                RunnerTabState::Running { iteration } => *iteration,
+                RunnerTabState::Done => tab.iterations_used,
+                RunnerTabState::Error(_) => unreachable!(),
+            };
+            // Left side: task title truncated to 40 visible chars.
+            let task_title = match &tab.current_task_title {
+                Some(t) => {
+                    let chars: Vec<char> = t.chars().collect();
+                    if chars.len() > 40 {
+                        let truncated: String = chars.iter().take(39).collect();
+                        format!("{truncated}…")
+                    } else {
+                        t.clone()
+                    }
+                }
+                None => "unknown".to_string(),
+            };
+            // Right side: "{done}/{total} tasks  iter {n}  {token_str}"
+            let workflow_dir = app.store.workflow_dir(&tab.workflow_name);
+            let (done, total) = Workflow::load(&workflow_dir)
+                .map(|w| (w.done_count(), w.total_count()))
+                .unwrap_or((0, 0));
+            let token_str = match state {
+                RunnerTabState::Running { .. } => {
+                    let task_tokens =
+                        tab.current_story_input_tokens + tab.current_story_output_tokens;
+                    match UsageFile::load(&workflow_dir) {
+                        Ok(usage) => {
+                            let session_tokens = usage.total.input_tokens
+                                + usage.total.output_tokens
+                                + task_tokens;
+                            format!(
+                                "task: {}  session: {}",
+                                format_tokens(task_tokens),
+                                format_tokens(session_tokens)
+                            )
+                        }
+                        Err(_) => format!("task: {}", format_tokens(task_tokens)),
+                    }
+                }
+                RunnerTabState::Done => match UsageFile::load(&workflow_dir) {
+                    Ok(usage) => {
+                        let session_tokens =
+                            usage.total.input_tokens + usage.total.output_tokens;
+                        format!("session: {}", format_tokens(session_tokens))
+                    }
+                    Err(_) => "session: ? tok".to_string(),
+                },
+                RunnerTabState::Error(_) => unreachable!(),
+            };
+            let right_str = format!("{done}/{total} tasks  iter {iter_n}  {token_str}");
+            let left_len = task_title.chars().count();
+            let mut spans = vec![Span::raw(task_title)];
+            spans.extend(notification_right_spans(left_len, &right_str, task_bar_width));
+            Line::from(spans)
+        }
     };
+    frame.render_widget(Paragraph::new(task_bar_line), layout[0]);
+
+    // PTY viewport (layout[1]): border title is now "Runner: {workflow_name}" only.
+    // The vt100 scrollback position (set_scrollback) is updated by key handlers so that
+    // PseudoTerminal renders the correct view without needing a mutable App reference.
+    let log_title_text = format!("Runner: {}", tab.workflow_name);
     let log_block = Block::default().borders(Borders::ALL).title(Span::styled(
         log_title_text,
         Style::default().fg(CLAUDE_ORANGE),
@@ -226,92 +289,53 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
     {
         use tui_term::widget::PseudoTerminal;
         let pseudo_term = PseudoTerminal::new(tab.parser.screen()).block(log_block);
-        frame.render_widget(pseudo_term, layout[0]);
+        frame.render_widget(pseudo_term, layout[1]);
     }
 
-    // Status line: insert_mode takes priority; then transient messages; then state-based hints.
-    // Insert mode: left = INSERT indicator (green), no task context.
-    // Normal mode Running/Done: left = keybindings + auto toggle + [?]help, right = task context.
-    // Normal mode Error: left = keybindings (red) + [?]help, no right side.
-    let bar_width = layout[1].width;
-    let task_ctx = runner_tab_context(app, tab);
+    // Buttons bar (layout[2]): action keybindings only; no task context on the right side.
+    // Insert mode: INSERT indicator (green). Status message: red text. State-based: keybindings.
     let insert_mode = tab.insert_mode;
-    let status_text = if insert_mode {
-        // INSERT mode indicator: show mode, suppress task context.
+    let buttons_line = if insert_mode {
         Line::from(Span::styled(
             "-- INSERT --  [Esc] normal mode",
             Style::default().fg(Color::Green),
         ))
     } else if let Some(msg) = &app.status_message {
-        // Transient status message overrides the left side.
-        let left = msg.as_str();
-        let left_len = left.chars().count();
-        let mut spans = vec![Span::styled(
-            left.to_string(),
-            Style::default().fg(Color::Red),
-        )];
-        if let Some(ctx) = &task_ctx {
-            spans.extend(notification_right_spans(left_len, ctx, bar_width));
-        }
-        Line::from(spans)
+        Line::from(Span::styled(msg.to_string(), Style::default().fg(Color::Red)))
     } else {
         match &tab.state {
             RunnerTabState::Running { .. } => {
                 let auto_label = if tab.auto_continue { "[a]uto:ON" } else { "[a]uto:OFF" };
                 let suffix = "[?]help  [q]uit";
                 let mut spans: Vec<Span> = Vec::new();
-                let mut left_len;
                 if tab.auto_continue {
                     // Show [c]ontinue dimmed — auto mode will handle it automatically.
-                    let static_part = format!("[i]nsert  [s]stop  {auto_label}  ");
-                    left_len = static_part.chars().count();
-                    spans.push(Span::raw(static_part));
-                    let continue_s = "[c]ontinue  ";
-                    left_len += continue_s.chars().count();
-                    spans.push(Span::styled(continue_s, Style::default().fg(Color::DarkGray)));
+                    spans.push(Span::raw(format!("[i]nsert  [s]stop  {auto_label}  ")));
+                    spans.push(Span::styled("[c]ontinue  ", Style::default().fg(Color::DarkGray)));
                 } else {
                     // auto_continue=false: [c] not actionable in Running state; omit it.
-                    let static_part = format!("[i]nsert  [s]stop  {auto_label}  ");
-                    left_len = static_part.chars().count();
-                    spans.push(Span::raw(static_part));
+                    spans.push(Span::raw(format!("[i]nsert  [s]stop  {auto_label}  ")));
                 }
-                left_len += suffix.chars().count();
                 spans.push(Span::raw(suffix));
-                if let Some(ctx) = &task_ctx {
-                    spans.extend(notification_right_spans(left_len, ctx, bar_width));
-                }
                 Line::from(spans)
             }
             RunnerTabState::Done => {
                 let dim_style = Style::default().fg(Color::DarkGray);
-                let mut spans: Vec<Span> = Vec::new();
                 // [c]ontinue is active when auto_continue=false, dimmed when auto_continue=true.
-                let (continue_span, continue_len) = if tab.auto_continue {
-                    let s = "[c]ontinue  ";
-                    (Span::styled(s, dim_style), s.chars().count())
+                let continue_span = if tab.auto_continue {
+                    Span::styled("[c]ontinue  ", dim_style)
                 } else {
-                    let s = "[c]ontinue  ";
-                    (Span::raw(s), s.chars().count())
+                    Span::raw("[c]ontinue  ")
                 };
-                let suffix = "[x]close  [?]help";
-                let left_len = continue_len + suffix.chars().count();
-                spans.push(continue_span);
-                spans.push(Span::raw(suffix));
-                if let Some(ctx) = &task_ctx {
-                    spans.extend(notification_right_spans(left_len, ctx, bar_width));
-                }
-                Line::from(spans)
+                Line::from(vec![continue_span, Span::raw("[x]close  [?]help")])
             }
-            RunnerTabState::Error(_) => {
-                // Error message lives in the terminal output; status bar shows keybindings only.
-                Line::from(Span::styled(
-                    "[x]close  [q]quit  [?]help",
-                    Style::default().fg(Color::Red),
-                ))
-            }
+            RunnerTabState::Error(_) => Line::from(Span::styled(
+                "[x]close  [q]quit  [?]help",
+                Style::default().fg(Color::Red),
+            )),
         }
     };
-    frame.render_widget(Paragraph::new(status_text), layout[1]);
+    frame.render_widget(Paragraph::new(buttons_line), layout[2]);
 }
 
 // Claude brand orange (#DA7756).
@@ -404,69 +428,6 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-/// Builds the right-aligned task context string for a runner tab status bar.
-///
-/// Returns `None` for Error state (no task context shown) or when the workflow
-/// cannot be loaded (should not normally happen). Format:
-///   `"{task_title}  {done}/{total} tasks  iter {n}"`
-/// where `task_title` is truncated to 30 visible chars with a `…` suffix if needed.
-fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
-    let iter_n = match &tab.state {
-        RunnerTabState::Running { iteration } => *iteration,
-        RunnerTabState::Done => tab.iterations_used,
-        RunnerTabState::Error(_) => return None,
-    };
-
-    let task_title = match &tab.current_task_title {
-        Some(t) => {
-            let chars: Vec<char> = t.chars().collect();
-            if chars.len() > 30 {
-                let truncated: String = chars.iter().take(29).collect();
-                format!("{truncated}…")
-            } else {
-                t.clone()
-            }
-        }
-        None => "unknown".to_string(),
-    };
-
-    let workflow_dir = app.store.workflow_dir(&tab.workflow_name);
-    let (done, total) = Workflow::load(&workflow_dir)
-        .map(|w| (w.done_count(), w.total_count()))
-        .unwrap_or((0, 0));
-
-    let token_str = match &tab.state {
-        RunnerTabState::Running { .. } => {
-            let task_tokens =
-                tab.current_story_input_tokens + tab.current_story_output_tokens;
-            match UsageFile::load(&workflow_dir) {
-                Ok(usage) => {
-                    let session_tokens = usage.total.input_tokens
-                        + usage.total.output_tokens
-                        + task_tokens;
-                    format!(
-                        "task: {}  session: {}",
-                        format_tokens(task_tokens),
-                        format_tokens(session_tokens)
-                    )
-                }
-                Err(_) => format!("task: {}", format_tokens(task_tokens)),
-            }
-        }
-        RunnerTabState::Done => match UsageFile::load(&workflow_dir) {
-            Ok(usage) => {
-                let session_tokens =
-                    usage.total.input_tokens + usage.total.output_tokens;
-                format!("session: {}", format_tokens(session_tokens))
-            }
-            Err(_) => "session: ? tok".to_string(),
-        },
-        RunnerTabState::Error(_) => unreachable!(),
-    };
-
-    Some(format!("{task_title}  {done}/{total} tasks  iter {iter_n}  {token_str}"))
 }
 
 /// Builds right-aligned notification spans to append to a status bar line.
@@ -576,7 +537,7 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled("  -- Normal mode --", header_style)),
         Line::from("  i           enter insert mode"),
-        Line::from("  Ctrl+S      stop loop"),
+        Line::from("  s      stop loop"),
         Line::from("  a           toggle auto-continue"),
         Line::from("  \u{2191}/k         scroll up"),
         Line::from("  \u{2193}/j         scroll down"),
@@ -646,7 +607,11 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Project")
-        .border_style(if focused { active_style } else { Style::default() });
+        .border_style(if focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let text = if focused {
         format!("{}_", editor.project)
     } else {
@@ -659,7 +624,11 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Branch")
-        .border_style(if focused { active_style } else { Style::default() });
+        .border_style(if focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let text = if focused {
         format!("{}_", editor.branch)
     } else {
@@ -672,7 +641,11 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Description")
-        .border_style(if focused { active_style } else { Style::default() });
+        .border_style(if focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let text = if focused {
         format!("{}_", editor.description)
     } else {
@@ -693,7 +666,8 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
         });
 
     if editor.validation_commands.is_empty() {
-        let msg = Paragraph::new("No validation commands. Press [Enter] to add one.").block(val_cmd_block);
+        let msg = Paragraph::new("No validation commands. Press [Enter] to add one.")
+            .block(val_cmd_block);
         frame.render_widget(msg, layout[3]);
     } else {
         let items: Vec<ListItem> = editor
@@ -811,7 +785,11 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
     let id_block = Block::default()
         .borders(Borders::ALL)
         .title("ID")
-        .border_style(if id_focused { active_style } else { Style::default() });
+        .border_style(if id_focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let id_text = if id_focused {
         format!("{}_", editor.story_id)
     } else {
@@ -824,7 +802,11 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
     let prio_block = Block::default()
         .borders(Borders::ALL)
         .title("Priority")
-        .border_style(if prio_focused { active_style } else { Style::default() });
+        .border_style(if prio_focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let prio_text = if prio_focused {
         format!("{}_", editor.story_priority)
     } else {
@@ -837,7 +819,11 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
     let title_block = Block::default()
         .borders(Borders::ALL)
         .title("Title")
-        .border_style(if title_focused { active_style } else { Style::default() });
+        .border_style(if title_focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let title_text = if title_focused {
         format!("{}_", editor.story_title)
     } else {
@@ -850,7 +836,11 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
     let desc_block = Block::default()
         .borders(Borders::ALL)
         .title("Description")
-        .border_style(if desc_focused { active_style } else { Style::default() });
+        .border_style(if desc_focused {
+            active_style
+        } else {
+            Style::default()
+        });
     let desc_text = if desc_focused {
         format!("{}_", editor.story_description)
     } else {
@@ -863,7 +853,11 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
     let crit_block = Block::default()
         .borders(Borders::ALL)
         .title("Acceptance Criteria  [Enter] add  [x] delete  [↑↓] navigate")
-        .border_style(if crit_focused { active_style } else { Style::default() });
+        .border_style(if crit_focused {
+            active_style
+        } else {
+            Style::default()
+        });
 
     if editor.story_criteria.is_empty() {
         let msg = if crit_focused {
@@ -889,8 +883,8 @@ fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect)
         let list = List::new(items)
             .block(crit_block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        let mut list_state = ListState::default()
-            .with_selected(if crit_focused { Some(cursor) } else { None });
+        let mut list_state =
+            ListState::default().with_selected(if crit_focused { Some(cursor) } else { None });
         frame.render_stateful_widget(list, layout[3], &mut list_state);
     }
 

@@ -21,8 +21,8 @@ use crate::ralph::workflow::{Task, Workflow};
 const MAX_ITERATIONS: u32 = 10;
 
 // Rows consumed by UI chrome around the PTY viewport:
-// 1 tab bar + 1 top border + 1 bottom border + 1 status line.
-const PTY_ROW_OVERHEAD: u16 = 4;
+// 1 tab bar + 1 task bar + 1 top border + 1 bottom border + 1 buttons bar.
+const PTY_ROW_OVERHEAD: u16 = 5;
 
 /// Per-runner tab state.
 pub enum RunnerTabState {

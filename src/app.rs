@@ -45,7 +45,7 @@ pub struct RunnerTab {
     /// Scroll offset for the log view (0 = auto-scroll to bottom).
     pub log_scroll: usize,
     /// When true the runner automatically spawns the next iteration on completion
-    /// without showing the ContinuePrompt dialog.
+    /// without waiting for the user to press [c].
     pub auto_continue: bool,
     /// ID of the task currently being executed (populated from `next_task()` before spawn).
     pub current_task_id: Option<String>,
@@ -79,10 +79,6 @@ pub enum Dialog {
     },
     DeleteWorkflow {
         name: String,
-    },
-    ContinuePrompt {
-        next_id: String,
-        next_title: String,
     },
     Help,
     RunnerHelp,
@@ -750,6 +746,20 @@ impl App {
                                 self.running = false;
                             }
                             KeyCode::Char('s') => self.stop_runner(),
+                            // [c]ontinue: advance to the next task when Done and auto_continue=false.
+                            // No-op when Running or when auto_continue=true.
+                            KeyCode::Char('c') => {
+                                let can_continue = self
+                                    .runner_tabs
+                                    .get(tab_idx)
+                                    .map(|t| {
+                                        matches!(t.state, RunnerTabState::Done) && !t.auto_continue
+                                    })
+                                    .unwrap_or(false);
+                                if can_continue {
+                                    self.spawn_next_iteration_at(tab_idx);
+                                }
+                            }
                             KeyCode::Char('a') => {
                                 if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
                                     tab.auto_continue = !tab.auto_continue;
@@ -890,26 +900,6 @@ impl App {
         // Help overlays: any key closes them.
         if matches!(self.dialog, Some(Dialog::Help) | Some(Dialog::RunnerHelp)) {
             self.dialog = None;
-            return;
-        }
-
-        // ContinuePrompt: Y/Enter continues loop, any other key cancels to Done.
-        if let Some(Dialog::ContinuePrompt { .. }) = &self.dialog {
-            self.dialog = None;
-            match code {
-                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-                    self.spawn_next_iteration();
-                }
-                _ => {
-                    // Mark the active runner tab as Done (runner already exited).
-                    if self.active_tab > 0
-                        && let Some(tab) = self.runner_tabs.get_mut(self.active_tab - 1)
-                    {
-                        tab.state = RunnerTabState::Done;
-                        tab.insert_mode = false;
-                    }
-                }
-            }
             return;
         }
 
@@ -1703,7 +1693,7 @@ impl App {
     /// Reloads all plan data from disk in response to a file-watcher event.
     ///
     /// Refreshes the workflow list, restores (or adjusts) the current selection,
-    /// reloads the displayed workflow, and clears any stale `ContinuePrompt` dialog.
+    /// and reloads the displayed workflow.
     /// Does not interrupt active runner subprocesses.
     pub fn reload_all(&mut self) {
         // Remember the currently selected workflow name to restore after the list refresh.
@@ -1737,44 +1727,6 @@ impl App {
 
         // Reload the currently selected workflow from disk.
         self.load_current_workflow();
-
-        // Clear a stale ContinuePrompt if the referenced task no longer needs to run.
-        if let Some(Dialog::ContinuePrompt { next_id, .. }) = &self.dialog {
-            let next_id_clone = next_id.clone();
-
-            // Find the workflow name for the active runner tab.
-            let tab_workflow_name = (self.active_tab > 0)
-                .then(|| self.runner_tabs.get(self.active_tab - 1))
-                .flatten()
-                .map(|t| t.workflow_name.clone());
-
-            let task_still_pending = tab_workflow_name
-                .as_ref()
-                .map(|name| {
-                    let dir = self.store.workflow_dir(name);
-                    Workflow::load(&dir)
-                        .ok()
-                        .map(|w| {
-                            w.prd
-                                .tasks
-                                .iter()
-                                .any(|t| t.id == next_id_clone && !t.passes)
-                        })
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-
-            if !task_still_pending {
-                self.dialog = None;
-                if self.active_tab > 0
-                    && let Some(tab) = self.runner_tabs.get_mut(self.active_tab - 1)
-                    && matches!(tab.state, RunnerTabState::Running { .. })
-                {
-                    tab.state = RunnerTabState::Done;
-                    tab.insert_mode = false;
-                }
-            }
-        }
     }
 
     /// Drains runner channels for all active runner tabs.
@@ -1926,7 +1878,7 @@ impl App {
                     }
                 }
 
-                // Determine whether to auto-loop, show ContinuePrompt, or transition to Done.
+                // Determine whether to auto-loop or transition to Done.
                 // Only act if still in Running state (not already Done from Complete signal or stop).
                 // Read and clear saw_complete before any spawning so the next iteration starts clean.
                 let saw_complete = self.runner_tabs[tab_idx].saw_complete;
@@ -1982,7 +1934,7 @@ impl App {
                             self.spawn_next_iteration_at(tab_idx);
                         }
                     } else {
-                        // auto_continue=false: original ContinuePrompt behavior.
+                        // auto_continue=false: transition to Done; user presses [c] to continue.
                         if is_complete {
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                             self.runner_tabs[tab_idx].insert_mode = false;
@@ -1994,17 +1946,10 @@ impl App {
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                             self.runner_tabs[tab_idx].insert_mode = false;
                         } else {
-                            // Natural exit within limit — ask user whether to continue.
-                            let next = tab_workflow
-                                .as_ref()
-                                .and_then(|w| w.next_task())
-                                .map(|t| (t.id.clone(), t.title.clone()))
-                                .unwrap_or_else(|| ("?".to_string(), "unknown".to_string()));
-                            self.dialog = Some(Dialog::ContinuePrompt {
-                                next_id: next.0,
-                                next_title: next.1,
-                            });
-                            // Keep Running { iteration } while awaiting the user's decision.
+                            // Natural exit within limit — transition to Done.
+                            // User can press [c] to continue to the next task.
+                            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                            self.runner_tabs[tab_idx].insert_mode = false;
                         }
                     }
                 }
@@ -2026,7 +1971,7 @@ impl App {
         if let Some(kill_tx) = tab.runner_kill_tx.take() {
             let _ = kill_tx.send(());
         }
-        // Mark Done immediately so drain_tab_channel skips the ContinuePrompt when Exited arrives.
+        // Mark Done immediately so drain_tab_channel skips re-processing on Exited.
         tab.state = RunnerTabState::Done;
         tab.insert_mode = false;
     }
@@ -2135,8 +2080,8 @@ impl App {
         )));
     }
 
-    /// Spawns the next claude iteration after the user confirms via the ContinuePrompt dialog.
-    /// Increments the current iteration counter and starts a new subprocess on the active runner tab.
+    /// Spawns the next claude iteration on the active runner tab.
+    /// Increments the current iteration counter and starts a new subprocess.
     fn spawn_next_iteration(&mut self) {
         if self.active_tab == 0 {
             return;
@@ -2146,7 +2091,8 @@ impl App {
 
     /// Spawns the next claude iteration on the runner tab at `tab_idx`.
     /// Increments the iteration counter and replaces the subprocess channels.
-    /// Requires the tab to be in `Running { iteration }` state; returns early otherwise.
+    /// Requires the tab to be in `Running { iteration }` or `Done` state; returns early otherwise.
+    /// When called from `Done` state, uses `iterations_used` as the iteration count.
     fn spawn_next_iteration_at(&mut self, tab_idx: usize) {
         // Extract workflow_name and iteration without holding a borrow.
         let (name, iteration) = {
@@ -2155,7 +2101,8 @@ impl App {
             };
             let iteration = match tab.state {
                 RunnerTabState::Running { iteration } => iteration,
-                _ => return,
+                RunnerTabState::Done => tab.iterations_used,
+                RunnerTabState::Error(_) => return,
             };
             (tab.workflow_name.clone(), iteration)
         };

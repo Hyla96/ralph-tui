@@ -43,12 +43,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::DeleteWorkflow { name }) => {
             draw_delete_workflow_dialog(frame, frame.area(), name);
         }
-        Some(Dialog::ContinuePrompt {
-            next_id,
-            next_title,
-        }) => {
-            draw_continue_prompt_dialog(frame, frame.area(), next_id, next_title);
-        }
         Some(Dialog::Help) => {
             draw_help_dialog(frame, frame.area());
         }
@@ -264,18 +258,45 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         match &tab.state {
             RunnerTabState::Running { .. } => {
                 let auto_label = if tab.auto_continue { "[a]uto:ON" } else { "[a]uto:OFF" };
-                let left = format!("[i]nsert  [s]stop  {auto_label}  [?]help  [q]uit");
-                let left_len = left.chars().count();
-                let mut spans = vec![Span::raw(left)];
+                let suffix = "[?]help  [q]uit";
+                let mut spans: Vec<Span> = Vec::new();
+                let mut left_len;
+                if tab.auto_continue {
+                    // Show [c]ontinue dimmed — auto mode will handle it automatically.
+                    let static_part = format!("[i]nsert  [s]stop  {auto_label}  ");
+                    left_len = static_part.chars().count();
+                    spans.push(Span::raw(static_part));
+                    let continue_s = "[c]ontinue  ";
+                    left_len += continue_s.chars().count();
+                    spans.push(Span::styled(continue_s, Style::default().fg(Color::DarkGray)));
+                } else {
+                    // auto_continue=false: [c] not actionable in Running state; omit it.
+                    let static_part = format!("[i]nsert  [s]stop  {auto_label}  ");
+                    left_len = static_part.chars().count();
+                    spans.push(Span::raw(static_part));
+                }
+                left_len += suffix.chars().count();
+                spans.push(Span::raw(suffix));
                 if let Some(ctx) = &task_ctx {
                     spans.extend(notification_right_spans(left_len, ctx, bar_width));
                 }
                 Line::from(spans)
             }
             RunnerTabState::Done => {
-                let left = "[x]close  [?]help";
-                let left_len = left.chars().count();
-                let mut spans = vec![Span::raw(left)];
+                let dim_style = Style::default().fg(Color::DarkGray);
+                let mut spans: Vec<Span> = Vec::new();
+                // [c]ontinue is active when auto_continue=false, dimmed when auto_continue=true.
+                let (continue_span, continue_len) = if tab.auto_continue {
+                    let s = "[c]ontinue  ";
+                    (Span::styled(s, dim_style), s.chars().count())
+                } else {
+                    let s = "[c]ontinue  ";
+                    (Span::raw(s), s.chars().count())
+                };
+                let suffix = "[x]close  [?]help";
+                let left_len = continue_len + suffix.chars().count();
+                spans.push(continue_span);
+                spans.push(Span::raw(suffix));
                 if let Some(ctx) = &task_ctx {
                     spans.extend(notification_right_spans(left_len, ctx, bar_width));
                 }
@@ -506,19 +527,6 @@ fn draw_delete_workflow_dialog(frame: &mut Frame, area: Rect, name: &str) {
         .borders(Borders::ALL)
         .title("Delete Workflow");
     frame.render_widget(Paragraph::new(text).block(block), dialog_rect);
-}
-
-fn draw_continue_prompt_dialog(frame: &mut Frame, area: Rect, next_id: &str, next_title: &str) {
-    // 70 wide (2 border + 68 content), 4 tall (2 border + 2 content lines)
-    let dialog_rect = centered_rect(70, 4, area);
-    frame.render_widget(Clear, dialog_rect);
-
-    let lines = vec![
-        Line::from("Task done. Continue? [Y/n]"),
-        Line::from(format!("Next: {next_id}: {next_title}")),
-    ];
-    let block = Block::default().borders(Borders::ALL).title("Continue?");
-    frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
 fn draw_new_workflow_dialog(frame: &mut Frame, area: Rect, input: &str, error: &Option<String>) {

@@ -63,6 +63,9 @@ pub struct RunnerTab {
     pub current_story_cache_write_tokens: u64,
     /// Estimated USD cost for the current story.
     pub current_story_cost_usd: f64,
+    /// When true, raw key input is forwarded to the PTY (Insert mode).
+    /// When false, app shortcuts are active (Normal mode).
+    pub insert_mode: bool,
 }
 
 pub enum Dialog {
@@ -1959,6 +1962,7 @@ impl App {
             tab.current_story_cache_read_tokens = 0;
             tab.current_story_cache_write_tokens = 0;
             tab.current_story_cost_usd = 0.0;
+            tab.insert_mode = false;
             self.active_tab = reuse + 1; // active_tab is 1-indexed for runner tabs
         } else {
             let tab = RunnerTab {
@@ -1978,6 +1982,7 @@ impl App {
                 current_story_cache_read_tokens: 0,
                 current_story_cache_write_tokens: 0,
                 current_story_cost_usd: 0.0,
+                insert_mode: false,
             };
             self.runner_tabs.push(tab);
             self.active_tab = self.runner_tabs.len(); // runner tabs are 1-indexed in active_tab

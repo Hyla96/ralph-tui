@@ -416,16 +416,36 @@ fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
         .map(|w| (w.done_count(), w.total_count()))
         .unwrap_or((0, 0));
 
-    let cost_str = match &tab.state {
-        RunnerTabState::Running { .. } => format!("${:.4}", tab.current_story_cost_usd),
+    let token_str = match &tab.state {
+        RunnerTabState::Running { .. } => {
+            let task_tokens =
+                tab.current_story_input_tokens + tab.current_story_output_tokens;
+            match UsageFile::load(&workflow_dir) {
+                Ok(usage) => {
+                    let session_tokens = usage.total.input_tokens
+                        + usage.total.output_tokens
+                        + task_tokens;
+                    format!(
+                        "task: {}  session: {}",
+                        format_tokens(task_tokens),
+                        format_tokens(session_tokens)
+                    )
+                }
+                Err(_) => format!("task: {}", format_tokens(task_tokens)),
+            }
+        }
         RunnerTabState::Done => match UsageFile::load(&workflow_dir) {
-            Ok(usage) => format!("${:.4}", usage.total.estimated_cost_usd),
-            Err(_) => "$?.????".to_string(),
+            Ok(usage) => {
+                let session_tokens =
+                    usage.total.input_tokens + usage.total.output_tokens;
+                format!("session: {}", format_tokens(session_tokens))
+            }
+            Err(_) => "session: ? tok".to_string(),
         },
         RunnerTabState::Error(_) => unreachable!(),
     };
 
-    Some(format!("{task_title}  {done}/{total} tasks  iter {iter_n}  {cost_str}"))
+    Some(format!("{task_title}  {done}/{total} tasks  iter {iter_n}  {token_str}"))
 }
 
 /// Builds right-aligned notification spans to append to a status bar line.

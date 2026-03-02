@@ -267,7 +267,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Build the full list of (label, is_active, is_runner) entries up front.
     let mut entries: Vec<(String, bool, bool)> = Vec::new();
 
-    entries.push((" Workflows ".to_string(), app.active_tab == 0, false));
+    entries.push((" [1] Workflows ".to_string(), app.active_tab == 0, false));
 
     for (i, tab) in app.runner_tabs.iter().enumerate() {
         let suffix = match &tab.state {
@@ -276,7 +276,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
             RunnerTabState::Error(_) => " !",
         };
         entries.push((
-            format!(" {}{} ", tab.workflow_name, suffix),
+            format!(" [{}] {}{} ", i + 2, tab.workflow_name, suffix),
             app.active_tab == i + 1,
             true,
         ));

@@ -32,11 +32,11 @@ When operating autonomously: flag ambiguity, document assumptions, log reasoning
 9. Update CLAUDE.md files in edited directories if you discovered reusable knowledge
 10. If needed update any relevant documentation in the project, like README.md and similar files.
 11. Commit all code changes: `feat: [description]`
-12. Update `prd.json`: set `passes: true` for the completed task
-13. Append to `progress.txt` (see format below)
-14. Check if ALL stories now have `passes: true`:
-    - If yes: output `<promise>COMPLETE</promise>`
-    - If no: output `<promise>COMPLETE</promise>` then stop. Do not start the next task.
+12. Append to `progress.txt` (see format below)
+13. Update `prd.json`: set `passes: true` for the completed task
+14. Signal completion to the runner:
+    - Run `Bash("printf '0' > \"$RALPH_PLAN_DIR/.complete\"")` to write the exit marker.
+    - Output `<promise>COMPLETE</promise>` then stop. Do not start the next task.
 
 ## Validation
 

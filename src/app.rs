@@ -1502,6 +1502,20 @@ impl App {
             self.runner_tabs[tab_idx].parser.process(&chunk);
         }
 
+        // Check for the .complete marker file written by the ralph agent.
+        // More reliable than PTY sentinel scanning: Claude Code's TUI intercepts
+        // <promise>COMPLETE</promise> and renders it as styled text — the raw XML
+        // never reaches the PTY byte stream, so RunnerEvent::Complete is never sent.
+        if !complete {
+            let workflow_name = self.runner_tabs[tab_idx].workflow_name.clone();
+            let plan_dir = self.store.workflow_dir(&workflow_name);
+            let complete_file = plan_dir.join(".complete");
+            if complete_file.exists() {
+                let _ = std::fs::remove_file(&complete_file);
+                complete = true;
+            }
+        }
+
         // Complete signal handling.
         //
         // Two sub-cases based on (auto_continue, done):

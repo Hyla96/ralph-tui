@@ -80,6 +80,7 @@ pub enum PrdEditorField {
     Project,
     Branch,
     Description,
+    ValidationCommands,
 }
 
 /// Which field of the story detail form currently has focus.
@@ -126,6 +127,10 @@ pub struct PrdEditorState {
     pub confirm_delete: Option<usize>,
     /// Transient error/status shown in the hint line; cleared on next keystroke.
     pub status: Option<String>,
+    /// Validation commands list (one per line); populated from prd.json.
+    pub validation_commands: Vec<String>,
+    /// Index of the currently active validation command line (within validation_commands).
+    pub validation_commands_cursor: usize,
     // Story detail editing fields (valid when mode == StoryDetail; populated on entry).
     pub story_id: String,
     pub story_title: String,
@@ -782,6 +787,8 @@ impl App {
             is_new_story: false,
             confirm_delete: None,
             status: None,
+            validation_commands: workflow.prd.validation_commands.clone(),
+            validation_commands_cursor: 0,
             // Story detail fields — populated when entering StoryDetail mode.
             story_id: String::new(),
             story_title: String::new(),
@@ -798,13 +805,14 @@ impl App {
     /// On success closes the editor; on error shows the message in the status line.
     fn save_prd_editor(&mut self) {
         // Clone the values we need before releasing the immutable borrow.
-        let (name, project, branch, description, stories) = match &self.prd_editor {
+        let (name, project, branch, description, stories, validation_commands) = match &self.prd_editor {
             Some(e) => (
                 e.workflow_name.clone(),
                 e.project.clone(),
                 e.branch.clone(),
                 e.description.clone(),
                 e.stories.clone(),
+                e.validation_commands.clone(),
             ),
             None => return,
         };
@@ -816,6 +824,7 @@ impl App {
                 workflow.prd.branch_name = branch;
                 workflow.prd.description = description;
                 workflow.prd.tasks = stories;
+                workflow.prd.validation_commands = validation_commands;
                 match workflow.save(&dir) {
                     Ok(()) => {
                         // Verify the saved file is valid JSON and can be deserialized.
@@ -921,6 +930,23 @@ impl App {
 
     /// Handles key events when the metadata section (Project / Branch / Description) is active.
     fn handle_prd_editor_metadata_key(&mut self, key: KeyEvent) {
+        // Handle 'x' delete in ValidationCommands first (before general Char branch)
+        if let KeyCode::Char('x') = key.code
+            && let Some(editor) = &mut self.prd_editor
+            && editor.focused_field == PrdEditorField::ValidationCommands
+            && editor.validation_commands_cursor < editor.validation_commands.len()
+        {
+            editor.validation_commands.remove(editor.validation_commands_cursor);
+            // Adjust cursor if we removed the last item
+            if editor.validation_commands_cursor >= editor.validation_commands.len()
+                && editor.validation_commands_cursor > 0
+            {
+                editor.validation_commands_cursor -= 1;
+            }
+            editor.status = None;
+            return;
+        }
+
         match key.code {
             KeyCode::Tab => {
                 if let Some(editor) = &mut self.prd_editor {
@@ -930,6 +956,9 @@ impl App {
                             editor.focused_field = PrdEditorField::Description;
                         }
                         PrdEditorField::Description => {
+                            editor.focused_field = PrdEditorField::ValidationCommands;
+                        }
+                        PrdEditorField::ValidationCommands => {
                             // Advance past the last metadata field into the story list.
                             editor.mode = PrdEditorMode::StoryList;
                         }
@@ -947,6 +976,40 @@ impl App {
                         PrdEditorField::Description => {
                             editor.focused_field = PrdEditorField::Branch;
                         }
+                        PrdEditorField::ValidationCommands => {
+                            editor.focused_field = PrdEditorField::Description;
+                        }
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.focused_field == PrdEditorField::ValidationCommands
+                    && editor.validation_commands_cursor > 0
+                {
+                    editor.validation_commands_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.focused_field == PrdEditorField::ValidationCommands
+                {
+                    let len = editor.validation_commands.len();
+                    if editor.validation_commands_cursor + 1 < len {
+                        editor.validation_commands_cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(editor) = &mut self.prd_editor
+                    && editor.focused_field == PrdEditorField::ValidationCommands
+                {
+                    if editor.validation_commands.is_empty() {
+                        editor.validation_commands.push(String::new());
+                    } else {
+                        let insert_pos = editor.validation_commands_cursor + 1;
+                        editor.validation_commands.insert(insert_pos, String::new());
+                        editor.validation_commands_cursor = insert_pos;
                     }
                 }
             }
@@ -962,6 +1025,11 @@ impl App {
                         PrdEditorField::Description => {
                             editor.description.pop();
                         }
+                        PrdEditorField::ValidationCommands => {
+                            if editor.validation_commands_cursor < editor.validation_commands.len() {
+                                editor.validation_commands[editor.validation_commands_cursor].pop();
+                            }
+                        }
                     }
                     editor.status = None;
                 }
@@ -972,6 +1040,11 @@ impl App {
                         PrdEditorField::Project => editor.project.push(c),
                         PrdEditorField::Branch => editor.branch.push(c),
                         PrdEditorField::Description => editor.description.push(c),
+                        PrdEditorField::ValidationCommands => {
+                            if editor.validation_commands_cursor < editor.validation_commands.len() {
+                                editor.validation_commands[editor.validation_commands_cursor].push(c);
+                            }
+                        }
                     }
                     editor.status = None;
                 }

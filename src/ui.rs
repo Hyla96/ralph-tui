@@ -458,6 +458,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
             Constraint::Length(3), // Project
             Constraint::Length(3), // Branch
             Constraint::Length(3), // Description
+            Constraint::Length(5), // Validation Commands
             Constraint::Min(0),    // Stories list
             Constraint::Length(1), // hint / status
         ])
@@ -505,6 +506,46 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     };
     frame.render_widget(Paragraph::new(text).block(block), layout[2]);
 
+    // Validation Commands field (multi-line list)
+    let val_cmd_focused = is_metadata && editor.focused_field == PrdEditorField::ValidationCommands;
+    let val_cmd_title = format!("Validation Commands ({})", editor.validation_commands.len());
+    let val_cmd_block = Block::default()
+        .borders(Borders::ALL)
+        .title(val_cmd_title)
+        .border_style(if val_cmd_focused {
+            active_style
+        } else {
+            Style::default()
+        });
+
+    if editor.validation_commands.is_empty() {
+        let msg = Paragraph::new("No validation commands. Press [Enter] to add one.").block(val_cmd_block);
+        frame.render_widget(msg, layout[3]);
+    } else {
+        let items: Vec<ListItem> = editor
+            .validation_commands
+            .iter()
+            .enumerate()
+            .map(|(i, cmd)| {
+                let text = if val_cmd_focused && i == editor.validation_commands_cursor {
+                    format!("{}_", cmd)
+                } else {
+                    cmd.clone()
+                };
+                ListItem::new(text)
+            })
+            .collect();
+        let list = List::new(items)
+            .block(val_cmd_block)
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let mut list_state = ListState::default().with_selected(if val_cmd_focused {
+            Some(editor.validation_commands_cursor)
+        } else {
+            None
+        });
+        frame.render_stateful_widget(list, layout[3], &mut list_state);
+    }
+
     // Stories list panel
     let stories_focused = editor.mode == PrdEditorMode::StoryList;
     let stories_title = format!("Stories ({})", editor.stories.len());
@@ -519,7 +560,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
 
     if editor.stories.is_empty() {
         let msg = Paragraph::new("No stories. Press [a] to add one.").block(stories_block);
-        frame.render_widget(msg, layout[3]);
+        frame.render_widget(msg, layout[4]);
     } else {
         let items: Vec<ListItem> = editor
             .stories
@@ -534,7 +575,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
             .block(stories_block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
         let mut list_state = ListState::default().with_selected(editor.selected_story);
-        frame.render_stateful_widget(list, layout[3], &mut list_state);
+        frame.render_stateful_widget(list, layout[4], &mut list_state);
     }
 
     // Hint / status line
@@ -557,7 +598,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     } else {
         Line::from("[Tab] next field  [Shift+Tab] prev  [Ctrl+S] save  [Esc] cancel")
     };
-    frame.render_widget(Paragraph::new(hint), layout[4]);
+    frame.render_widget(Paragraph::new(hint), layout[5]);
 }
 
 /// Renders the story detail form (US-003).

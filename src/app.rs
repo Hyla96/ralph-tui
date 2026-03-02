@@ -591,82 +591,118 @@ impl App {
                     }
                 } else {
                     // Runner tab keybindings.
-                    // Keys NOT forwarded to PTY: t, q, Ctrl+C, s, x, a, ?, k/Up, j/Down, G/End.
-                    // All other keys are forwarded as raw bytes via key_to_pty_bytes.
-                    match key.code {
-                        KeyCode::Char('t') => self.tab_nav_pending = true,
-                        KeyCode::Char('q') => self.running = false,
-                        KeyCode::Char('?') => self.dialog = Some(Dialog::RunnerHelp),
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            self.running = false;
-                        }
-                        KeyCode::Char('s') => self.stop_runner(),
-                        KeyCode::Char('a') => {
-                            let tab_idx = self.active_tab - 1;
-                            if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                                tab.auto_continue = !tab.auto_continue;
-                                let msg = if tab.auto_continue {
-                                    "Auto-continue ON".to_string()
-                                } else {
-                                    "Auto-continue OFF".to_string()
-                                };
-                                self.status_message = Some(msg);
-                                self.status_message_expires =
-                                    Some(Instant::now() + Duration::from_secs(2));
+                    // Read insert_mode via copy before any mutable borrow to avoid borrow conflicts.
+                    let tab_idx = self.active_tab - 1;
+                    let insert_mode = self
+                        .runner_tabs
+                        .get(tab_idx)
+                        .map(|t| t.insert_mode)
+                        .unwrap_or(false);
+
+                    if insert_mode {
+                        // Insert mode: Esc exits, Ctrl+C sends interrupt to PTY, all other keys forwarded.
+                        match key.code {
+                            KeyCode::Esc => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.insert_mode = false;
+                                }
                             }
-                        }
-                        // Close a Done/Error runner tab; refuse if still Running.
-                        KeyCode::Char('x') => {
-                            let tab_idx = self.active_tab - 1;
-                            let is_running = self
-                                .runner_tabs
-                                .get(tab_idx)
-                                .map(|t| matches!(t.state, RunnerTabState::Running { .. }))
-                                .unwrap_or(false);
-                            if is_running {
-                                self.status_message = Some("Stop the runner first [s]".to_string());
-                                self.status_message_expires =
-                                    Some(Instant::now() + Duration::from_secs(2));
-                            } else if self.runner_tabs.get(tab_idx).is_some() {
-                                self.runner_tabs.remove(tab_idx);
-                                // Move to the previous tab; saturating_sub(1) gives 0 (Workflows)
-                                // when active_tab was 1 (the only runner tab).
-                                self.active_tab = self.active_tab.saturating_sub(1);
-                            }
-                        }
-                        // Log scroll: Up/k scroll up (into scrollback), Down/j scroll down.
-                        // log_scroll == 0 means auto-scroll (live vt100 screen).
-                        // log_scroll == N means N rows of scrollback are shown above the screen.
-                        // The scrollback position is kept in sync on the vt100 parser's screen so
-                        // that PseudoTerminal renders the correct view without needing &mut in draw.
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let tab_idx = self.active_tab - 1;
-                            if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                                // Cap at the configured scrollback size (1000 rows).
-                                tab.log_scroll = (tab.log_scroll + 1).min(1000);
-                                tab.parser.screen_mut().set_scrollback(tab.log_scroll);
-                            }
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let tab_idx = self.active_tab - 1;
-                            if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                                tab.log_scroll = tab.log_scroll.saturating_sub(1);
-                                tab.parser.screen_mut().set_scrollback(tab.log_scroll);
-                            }
-                        }
-                        // End or G re-enables auto-scroll (live screen, scrollback = 0).
-                        KeyCode::End | KeyCode::Char('G') => {
-                            let tab_idx = self.active_tab - 1;
-                            if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-                                tab.log_scroll = 0;
-                                tab.parser.screen_mut().set_scrollback(0);
-                            }
-                        }
-                        // All other keys are forwarded directly to the PTY as raw bytes.
-                        _ => {
-                            if let Some(bytes) = key_to_pty_bytes(key) {
-                                let tab_idx = self.active_tab - 1;
+                            KeyCode::Char('c')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 if let Some(tab) = self.runner_tabs.get(tab_idx)
+                                    && let Some(tx) = &tab.stdin_tx
+                                {
+                                    let _ = tx.send(vec![0x03]);
+                                }
+                            }
+                            _ => {
+                                if let Some(bytes) = key_to_pty_bytes(key)
+                                    && let Some(tab) = self.runner_tabs.get(tab_idx)
+                                    && let Some(tx) = &tab.stdin_tx
+                                {
+                                    let _ = tx.send(bytes);
+                                }
+                            }
+                        }
+                    } else {
+                        // Normal mode keybindings.
+                        // Keys NOT forwarded to PTY: i, t, q, Ctrl+C, s, x, a, ?, k/Up, j/Down, G/End.
+                        // All other keys are forwarded as raw bytes via key_to_pty_bytes.
+                        match key.code {
+                            KeyCode::Char('i') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.insert_mode = true;
+                                }
+                            }
+                            KeyCode::Char('t') => self.tab_nav_pending = true,
+                            KeyCode::Char('q') => self.running = false,
+                            KeyCode::Char('?') => self.dialog = Some(Dialog::RunnerHelp),
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                self.running = false;
+                            }
+                            KeyCode::Char('s') => self.stop_runner(),
+                            KeyCode::Char('a') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.auto_continue = !tab.auto_continue;
+                                    let msg = if tab.auto_continue {
+                                        "Auto-continue ON".to_string()
+                                    } else {
+                                        "Auto-continue OFF".to_string()
+                                    };
+                                    self.status_message = Some(msg);
+                                    self.status_message_expires =
+                                        Some(Instant::now() + Duration::from_secs(2));
+                                }
+                            }
+                            // Close a Done/Error runner tab; refuse if still Running.
+                            KeyCode::Char('x') => {
+                                let is_running = self
+                                    .runner_tabs
+                                    .get(tab_idx)
+                                    .map(|t| matches!(t.state, RunnerTabState::Running { .. }))
+                                    .unwrap_or(false);
+                                if is_running {
+                                    self.status_message =
+                                        Some("Stop the runner first [s]".to_string());
+                                    self.status_message_expires =
+                                        Some(Instant::now() + Duration::from_secs(2));
+                                } else if self.runner_tabs.get(tab_idx).is_some() {
+                                    self.runner_tabs.remove(tab_idx);
+                                    // Move to the previous tab; saturating_sub(1) gives 0 (Workflows)
+                                    // when active_tab was 1 (the only runner tab).
+                                    self.active_tab = self.active_tab.saturating_sub(1);
+                                }
+                            }
+                            // Log scroll: Up/k scroll up (into scrollback), Down/j scroll down.
+                            // log_scroll == 0 means auto-scroll (live vt100 screen).
+                            // log_scroll == N means N rows of scrollback are shown above the screen.
+                            // The scrollback position is kept in sync on the vt100 parser's screen so
+                            // that PseudoTerminal renders the correct view without needing &mut in draw.
+                            KeyCode::Up | KeyCode::Char('k') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    // Cap at the configured scrollback size (1000 rows).
+                                    tab.log_scroll = (tab.log_scroll + 1).min(1000);
+                                    tab.parser.screen_mut().set_scrollback(tab.log_scroll);
+                                }
+                            }
+                            KeyCode::Down | KeyCode::Char('j') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.log_scroll = tab.log_scroll.saturating_sub(1);
+                                    tab.parser.screen_mut().set_scrollback(tab.log_scroll);
+                                }
+                            }
+                            // End or G re-enables auto-scroll (live screen, scrollback = 0).
+                            KeyCode::End | KeyCode::Char('G') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.log_scroll = 0;
+                                    tab.parser.screen_mut().set_scrollback(0);
+                                }
+                            }
+                            // All other keys are forwarded directly to the PTY as raw bytes.
+                            _ => {
+                                if let Some(bytes) = key_to_pty_bytes(key)
+                                    && let Some(tab) = self.runner_tabs.get(tab_idx)
                                     && let Some(tx) = &tab.stdin_tx
                                 {
                                     let _ = tx.send(bytes);

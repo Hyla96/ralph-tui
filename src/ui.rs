@@ -110,13 +110,39 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
                 workflow.total_count()
             );
             let block = Block::default().borders(Borders::ALL).title(title);
+
+            // Load usage file once for per-task token display.
+            let usage_file = app
+                .selected_workflow
+                .and_then(|i| app.workflows.get(i))
+                .map(|name| {
+                    let dir = app.store.workflow_dir(name);
+                    UsageFile::load(&dir).unwrap_or_default()
+                })
+                .unwrap_or_default();
+
             let items: Vec<ListItem> = workflow
                 .prd
                 .tasks
                 .iter()
                 .map(|task| {
                     let check = if task.passes { "✓" } else { "○" };
-                    let text = format!("{} [{}] {}: {}", check, task.priority, task.id, task.title);
+                    let tok_suffix = if task.passes {
+                        usage_file
+                            .tasks
+                            .get(&task.id)
+                            .map(|entry| {
+                                let total = entry.input_tokens + entry.output_tokens;
+                                format!("  {}", format_tokens(total))
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    let text = format!(
+                        "{} [{}] {}: {}{}",
+                        check, task.priority, task.id, task.title, tok_suffix
+                    );
                     let style = if task.passes {
                         Style::default().fg(Color::DarkGray)
                     } else {
@@ -258,6 +284,22 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
 
 // Claude brand orange (#DA7756).
 const CLAUDE_ORANGE: Color = Color::Rgb(218, 119, 86);
+
+/// Formats a token count with comma thousands-separators and appends " tok".
+/// Example: format_tokens(12345) → "12,345 tok"
+fn format_tokens(n: u64) -> String {
+    let s = n.to_string();
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut result = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    format!("{result} tok")
+}
 
 /// Renders the single-line tab bar at the top of the screen.
 ///

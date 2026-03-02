@@ -727,15 +727,8 @@ impl App {
                                     self.active_tab - 1
                                 };
                             }
-                            // All other keys are forwarded directly to the PTY as raw bytes.
-                            _ => {
-                                if let Some(bytes) = key_to_pty_bytes(key)
-                                    && let Some(tab) = self.runner_tabs.get(tab_idx)
-                                    && let Some(tx) = &tab.stdin_tx
-                                {
-                                    let _ = tx.send(bytes);
-                                }
-                            }
+                            // Normal mode: unrecognized keys are ignored (use Insert mode to type freely).
+                            _ => {}
                         }
                     }
                 } // closes else { block
@@ -821,6 +814,7 @@ impl App {
                         && let Some(tab) = self.runner_tabs.get_mut(self.active_tab - 1)
                     {
                         tab.state = RunnerTabState::Done;
+                        tab.insert_mode = false;
                     }
                 }
             }
@@ -1685,6 +1679,7 @@ impl App {
                     && matches!(tab.state, RunnerTabState::Running { .. })
                 {
                     tab.state = RunnerTabState::Done;
+                    tab.insert_mode = false;
                 }
             }
         }
@@ -1788,6 +1783,7 @@ impl App {
                     tab_workflow.as_ref().map(|w| w.is_complete()).unwrap_or(false);
                 if is_complete {
                     self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                    self.runner_tabs[tab_idx].insert_mode = false;
                 } else {
                     // Spawn next immediately; old process will exit on its own.
                     // Its Exited event goes on the old (now-replaced) channel and is discarded.
@@ -1796,6 +1792,7 @@ impl App {
             } else if !is_auto {
                 // Original behavior: mark Done right away.
                 self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                self.runner_tabs[tab_idx].insert_mode = false;
                 self.load_current_workflow();
             }
             // When is_auto && done: fall through; the done block below handles everything.
@@ -1823,6 +1820,7 @@ impl App {
                 let err_msg = format!("\r\nSpawnError: {msg}\r\n");
                 self.runner_tabs[tab_idx].parser.process(err_msg.as_bytes());
                 self.runner_tabs[tab_idx].state = RunnerTabState::Error(msg.clone());
+                self.runner_tabs[tab_idx].insert_mode = false;
                 self.status_message = Some(msg);
                 self.status_message_expires = None; // persist until dismissed
             } else {
@@ -1883,6 +1881,7 @@ impl App {
 
                         if is_complete {
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                            self.runner_tabs[tab_idx].insert_mode = false;
                         } else if is_success {
                             // Success: spawn next iteration immediately.
                             self.spawn_next_iteration_at(tab_idx);
@@ -1892,6 +1891,7 @@ impl App {
                             );
                             self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                            self.runner_tabs[tab_idx].insert_mode = false;
                         } else {
                             // Failure within limit: write retry log and spawn next.
                             let exit_code = match exited_code {
@@ -1908,12 +1908,14 @@ impl App {
                         // auto_continue=false: original ContinuePrompt behavior.
                         if is_complete {
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                            self.runner_tabs[tab_idx].insert_mode = false;
                         } else if iteration >= MAX_ITERATIONS {
                             let msg = format!(
                                 "\r\nMax iterations ({MAX_ITERATIONS}) reached. Stopping.\r\n"
                             );
                             self.runner_tabs[tab_idx].parser.process(msg.as_bytes());
                             self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                            self.runner_tabs[tab_idx].insert_mode = false;
                         } else {
                             // Natural exit within limit — ask user whether to continue.
                             let next = tab_workflow
@@ -1949,6 +1951,7 @@ impl App {
         }
         // Mark Done immediately so drain_tab_channel skips the ContinuePrompt when Exited arrives.
         tab.state = RunnerTabState::Done;
+        tab.insert_mode = false;
     }
 
     fn start_runner(&mut self) {

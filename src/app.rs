@@ -1877,8 +1877,11 @@ impl App {
                     self.runner_tabs[tab_idx].state = RunnerTabState::Done;
                     self.runner_tabs[tab_idx].insert_mode = false;
                 } else {
-                    // Spawn next immediately; old process will exit on its own.
-                    // Its Exited event goes on the old (now-replaced) channel and is discarded.
+                    // Kill the old process before spawning next. It sent the sentinel
+                    // but has not exited yet. Mirrors the stop_runner() pattern.
+                    if let Some(kill_tx) = self.runner_tabs[tab_idx].runner_kill_tx.take() {
+                        let _ = kill_tx.send(());
+                    }
                     self.spawn_next_iteration_at(tab_idx);
                 }
             } else if !is_auto {

@@ -927,6 +927,18 @@ impl App {
                                 self.running = false;
                             }
                             KeyCode::Char('s') => self.stop_runner(),
+                            // [r]estart: re-spawn the runner from current plan state when Stopped.
+                            // No-op in Running or Done states (button not shown in those states).
+                            KeyCode::Char('r') => {
+                                let is_stopped = self
+                                    .runner_tabs
+                                    .get(tab_idx)
+                                    .map(|t| matches!(t.state, RunnerTabState::Stopped))
+                                    .unwrap_or(false);
+                                if is_stopped {
+                                    self.restart_runner_at(tab_idx);
+                                }
+                            }
                             // [c]ontinue: advance to the next task when Done and auto_continue=false.
                             // No-op when Running or when auto_continue=true.
                             KeyCode::Char('c') => {
@@ -2653,6 +2665,76 @@ impl App {
             return;
         }
         self.spawn_next_iteration_at(self.active_tab - 1);
+    }
+
+    /// Restarts the runner for a tab currently in `Stopped` state.
+    /// Resets the tab to a fresh `Running { iteration: 1 }` with a new subprocess,
+    /// preserving the same workflow. Returns early if the tab is not in `Stopped` state.
+    fn restart_runner_at(&mut self, tab_idx: usize) {
+        // Extract workflow_name; confirm the tab is Stopped.
+        let name = {
+            let Some(tab) = self.runner_tabs.get(tab_idx) else {
+                return;
+            };
+            if !matches!(tab.state, RunnerTabState::Stopped) {
+                return;
+            }
+            tab.workflow_name.clone()
+        };
+
+        let plan_dir = self.store.workflow_dir(&name);
+        let repo_root = self.store.root().to_path_buf();
+
+        // Load workflow to populate current task info before spawning.
+        let (current_task_id, current_task_title) = {
+            let workflow_dir = self.store.workflow_dir(&name);
+            match Workflow::load(&workflow_dir)
+                .ok()
+                .and_then(|w| w.next_task().map(|t| (t.id.clone(), t.title.clone())))
+            {
+                Some((id, title)) => (Some(id), Some(title)),
+                None => (None, None),
+            }
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
+
+        let (cols, rows) = self.initial_size;
+        let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+
+        if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+            tab.parser = VtParser::new(pty_rows, cols, 1000);
+            tab.log_scroll = 0;
+            tab.state = RunnerTabState::Running { iteration: 1 };
+            tab.runner_rx = Some(rx);
+            tab.runner_kill_tx = Some(kill_tx);
+            tab.stdin_tx = Some(stdin_tx);
+            tab.auto_continue = false;
+            tab.current_task_id = current_task_id;
+            tab.current_task_title = current_task_title;
+            tab.iterations_used = 1;
+            tab.current_story_input_tokens = 0;
+            tab.current_story_output_tokens = 0;
+            tab.current_story_cache_read_tokens = 0;
+            tab.current_story_cache_write_tokens = 0;
+            tab.current_story_cost_usd = 0.0;
+            tab.insert_mode = false;
+            tab.saw_complete = false;
+        }
+
+        self.resize_txs.push(resize_tx);
+        drop(tokio::spawn(runner_task(
+            plan_dir,
+            repo_root,
+            tx,
+            kill_rx,
+            stdin_rx,
+            (cols, pty_rows),
+            resize_rx,
+        )));
     }
 
     /// Spawns the next claude iteration on the runner tab at `tab_idx`.

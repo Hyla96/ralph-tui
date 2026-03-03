@@ -254,7 +254,7 @@ async fn runner_task(
     };
 
     // Read PTY output in a blocking thread: send raw 4096-byte chunks as Bytes events.
-    // <promise>COMPLETE</promise> is detected by scanning the ANSI-stripped combined buffer
+    // RALPH_SENTINEL_COMPLETE is detected by scanning the ANSI-stripped combined buffer
     // (tail + current chunk) so ANSI escape codes around the sentinel don't break detection,
     // and sentinels split across two 4096-byte reads are still caught.
     let tx_read = tx.clone();
@@ -300,7 +300,9 @@ async fn runner_task(
 
                     // Detect the completion sentinel on the ANSI-stripped combined buffer so
                     // that ANSI escape codes injected by the terminal don't prevent matching.
-                    if stripped_combined.contains("<promise>COMPLETE</promise>") {
+                    // Uses a plain-text sentinel because Claude Code CLI strips XML-like tags
+                    // (e.g. <promise>) from rendered output before they reach the PTY.
+                    if stripped_combined.contains("RALPH_SENTINEL_COMPLETE") {
                         let _ = tx_read.send(RunnerEvent::Complete);
                     }
 

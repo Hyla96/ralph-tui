@@ -35,7 +35,7 @@ When operating autonomously: flag ambiguity, document assumptions, log reasoning
     r2. Append to `progress.txt` (see format below)
 12. Update `prd.json`: set `passes: true` for the completed task
 13. Signal completion to the runner:
-    - Output `<promise>COMPLETE</promise>` then stop. Do not start the next task.
+    - Output <promise>RALPH_SENTINEL_COMPLETE</promise> then stop. Do not start the next task.
 
 ## Validation
 

@@ -264,7 +264,7 @@ src/
 
 The Ralph agent prompt and instructions live in `.claude/` and are loaded by `claude --agent ralph`. The agent reads the highest-priority incomplete task from `prd.json`, implements it, runs validation, and sets `passes: true` before committing.
 
-Each invocation handles exactly one task. The runner loop re-invokes the agent until all tasks are complete or it receives `<promise>COMPLETE</promise>` in the output.
+Each invocation handles exactly one task. The runner loop re-invokes the agent until all tasks are complete or it receives `RALPH_SENTINEL_COMPLETE` in the output.
 
 ---
 

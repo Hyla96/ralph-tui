@@ -97,6 +97,102 @@ Press `t`, then:
 
 ---
 
+## Getting Started
+
+ralph-cli is a Rust TUI that manages the Ralph agent loop. Ralph is a Claude Code agent that reads a `prd.json` workflow file, implements one task at a time, runs validation, and commits the result. ralph-cli is the controller: it discovers workflows in a git repo, lets you start and stop agent loops, and streams the live output. You bring the repo and the task spec; ralph-cli and Ralph take care of the rest.
+
+### Step 1 — Prerequisites
+
+- **Rust** (edition 2024, toolchain ≥ 1.86). Install via [rustup](https://rustup.rs/):
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+- **[`just`](https://github.com/casey/just)** task runner:
+  ```sh
+  cargo install just
+  # or on macOS:
+  brew install just
+  ```
+
+### Step 2 — Clone the repository
+
+```sh
+git clone https://github.com/your-org/ralph-cli.git
+cd ralph-cli
+```
+
+If you are reviewing a pull request, check out the relevant branch:
+
+```sh
+git checkout <branch-name>
+```
+
+### Step 3 — Copy agent resources
+
+```sh
+just set-resources
+```
+
+This copies the `/prd` and `/prd-synth` skills and the `ralph` agent into `~/.claude/`, making them available to Claude Code.
+
+### Step 4 — Install the binary
+
+```sh
+just install
+```
+
+This runs `cargo install --path .` and installs the `ralph-cli` binary on your `PATH`.
+
+### Step 5 — Create a sandbox repository
+
+> **Note:** ralph-cli must always be run from inside a git repository.
+
+```sh
+mkdir my-project && cd my-project && git init && git commit --allow-empty -m 'init'
+```
+
+### Step 6 — Generate a workflow with `/prd`
+
+Open a Claude Code session inside your sandbox repo and run the `/prd` skill to describe the feature you want to build:
+
+```sh
+claude
+```
+
+Inside the Claude Code session:
+
+```
+/prd We need a feature that shows token usage for ralph usage in this TUI
+```
+
+Claude will walk you through refining the spec.
+
+### Step 7 — Synthesize `prd.json` with `/prd-synth`
+
+In the same Claude Code session, run:
+
+```
+/prd-synth
+```
+
+This emits `.ralph/workflows/<name>/prd.json` containing the structured task list.
+
+### Step 8 — Exit Claude and launch ralph-cli
+
+Exit the Claude Code session, then from the repo root:
+
+```sh
+ralph-cli
+```
+
+### Step 9 — Start the agent loop
+
+In the Workflows tab, select your workflow and press `r` to start the agent loop. Ralph will implement tasks one by one. Wait for each task to complete; the runner tab streams live output.
+
+For a full reference of key bindings, see [Keybindings](#keybindings).
+
+---
+
 ## Development
 
 ### Prerequisites

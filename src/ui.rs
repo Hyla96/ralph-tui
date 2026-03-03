@@ -358,9 +358,22 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                     "[i]nsert  [s]stop  {auto_label}  [?]help  [q]uit"
                 )))
             }
-            RunnerTabState::Done | RunnerTabState::Stopped => {
+            RunnerTabState::Done => {
+                // [c]continue only when auto OFF and workflow not complete.
+                let workflow_complete = app.is_workflow_complete(&tab.workflow_name);
+                let show_continue = !tab.auto_continue && !workflow_complete;
+                if show_continue {
+                    Line::from(vec![
+                        Span::raw("[c]continue  "),
+                        Span::raw("[x]close  [?]help"),
+                    ])
+                } else {
+                    Line::from(Span::raw("[x]close  [?]help"))
+                }
+            }
+            RunnerTabState::Stopped => {
+                // Stopped: same as Done for now; US-005 will replace this with restart button bar.
                 let dim_style = Style::default().fg(Color::DarkGray);
-                // [c]ontinue is active when auto_continue=false, dimmed when auto_continue=true.
                 let continue_span = if tab.auto_continue {
                     Span::styled("[c]ontinue  ", dim_style)
                 } else {

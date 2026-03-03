@@ -243,7 +243,9 @@ async fn runner_task(
     };
 
     // Read PTY output in a blocking thread: send raw 4096-byte chunks as Bytes events.
-    // <promise>COMPLETE</promise> is detected by scanning the chunk as lossy UTF-8.
+    // <promise>COMPLETE</promise> is detected by scanning the ANSI-stripped combined buffer
+    // (tail + current chunk) so ANSI escape codes around the sentinel don't break detection,
+    // and sentinels split across two 4096-byte reads are still caught.
     let tx_read = tx.clone();
     let debug_pty = std::env::var("RALPH_DEBUG_PTY").is_ok();
     let debug_log_path = repo_root.join(".ralph").join("pty-debug.log");
@@ -277,10 +279,6 @@ async fn runner_task(
                         }
                     }
 
-                    if chunk_str.contains("<promise>COMPLETE</promise>") {
-                        let _ = tx_read.send(RunnerEvent::Complete);
-                    }
-
                     // Build combined string (tail + chunk) to handle lines split across
                     // consecutive 4096-byte PTY chunks. Strip ANSI before parsing.
                     let mut combined = Vec::with_capacity(tail.len() + n);
@@ -288,6 +286,12 @@ async fn runner_task(
                     combined.extend_from_slice(chunk);
                     let combined_lossy = String::from_utf8_lossy(&combined);
                     let stripped_combined = strip_ansi(&combined_lossy);
+
+                    // Detect the completion sentinel on the ANSI-stripped combined buffer so
+                    // that ANSI escape codes injected by the terminal don't prevent matching.
+                    if stripped_combined.contains("<promise>COMPLETE</promise>") {
+                        let _ = tx_read.send(RunnerEvent::Complete);
+                    }
 
                     if let Some(usage) = parse_token_line(&stripped_combined) {
                         let _ = tx_read.send(RunnerEvent::TokenUsage {
@@ -1815,12 +1819,40 @@ impl App {
 
         // Complete signal handling.
         //
-        // auto_continue=false, complete, !done: mark Done immediately (original behavior).
-        // auto_continue=true: wait for the Exited event; the done block handles all spawning.
-        if complete && !done && !self.runner_tabs[tab_idx].auto_continue {
-            self.runner_tabs[tab_idx].state = RunnerTabState::Done;
-            self.runner_tabs[tab_idx].insert_mode = false;
-            self.load_current_workflow();
+        // Three sub-cases based on (auto_continue, done):
+        //   auto_continue=false (any done): mark Done immediately — original behavior.
+        //   auto_continue=true, done=false: sentinel arrived, process still running;
+        //     decide now — spawn next or mark Done.
+        //   auto_continue=true, done=true: defer all state changes to the done block below
+        //     so the done block can read the Running iteration and run the auto-loop.
+        if complete {
+            let is_auto = self.runner_tabs[tab_idx].auto_continue;
+            if is_auto && !done {
+                // Sentinel received; process still running. Decide now.
+                self.load_current_workflow();
+                let workflow_name = self.runner_tabs[tab_idx].workflow_name.clone();
+                let workflow_dir = self.store.workflow_dir(&workflow_name);
+                let tab_workflow = Workflow::load(&workflow_dir).ok();
+                let is_complete =
+                    tab_workflow.as_ref().map(|w| w.is_complete()).unwrap_or(false);
+                if is_complete {
+                    self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                    self.runner_tabs[tab_idx].insert_mode = false;
+                } else {
+                    // Kill the old process before spawning next. It sent the sentinel
+                    // but has not exited yet. Mirrors the stop_runner() pattern.
+                    if let Some(kill_tx) = self.runner_tabs[tab_idx].runner_kill_tx.take() {
+                        let _ = kill_tx.send(());
+                    }
+                    self.spawn_next_iteration_at(tab_idx);
+                }
+            } else if !is_auto {
+                // Original behavior: mark Done right away.
+                self.runner_tabs[tab_idx].state = RunnerTabState::Done;
+                self.runner_tabs[tab_idx].insert_mode = false;
+                self.load_current_workflow();
+            }
+            // When is_auto && done: fall through; the done block below handles everything.
         }
 
         if done {

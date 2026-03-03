@@ -9,7 +9,6 @@ use ralph::store::Store;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    eprintln!("Starting Ralph CLI");
     let cwd = std::env::current_dir()?;
     let store = match Store::find(&cwd) {
         Ok(s) => s,

@@ -102,7 +102,19 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
         let items: Vec<ListItem> = app
             .workflows
             .iter()
-            .map(|name| ListItem::new(name.as_str()))
+            .map(|name| {
+                let has_src = app
+                    .store
+                    .workflow_dir(name)
+                    .join("prd-source.md")
+                    .exists();
+                let label = if has_src {
+                    format!("{name} [src]")
+                } else {
+                    name.clone()
+                };
+                ListItem::new(label)
+            })
             .collect();
         let list = List::new(items)
             .block(plans_block)

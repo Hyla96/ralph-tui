@@ -381,6 +381,135 @@ async fn runner_task(
     let _ = tx.send(RunnerEvent::Exited(exit_code));
 }
 
+/// Spawns `claude --dangerously-skip-permissions /prd-synth` inside a PTY in the
+/// workflow directory and streams output back via `tx`.
+/// Listens on `kill_rx` for an early termination signal.
+async fn synth_task(
+    workflow_dir: PathBuf,
+    tx: UnboundedSender<RunnerEvent>,
+    kill_rx: oneshot::Receiver<()>,
+    size: (u16, u16),
+    resize_rx: UnboundedReceiver<(u16, u16)>,
+) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!(
+            "[synth] spawning claude prd-synth in {}\r\n",
+            workflow_dir.display()
+        )
+        .into_bytes(),
+    ));
+
+    let (cols, rows) = size;
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = tx.send(RunnerEvent::SpawnError(format!("PTY open failed: {e}")));
+            return;
+        }
+    };
+
+    let mut cmd = CommandBuilder::new("claude");
+    cmd.args(["--dangerously-skip-permissions", "/prd-synth"]);
+    cmd.cwd(&workflow_dir);
+
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            let friendly = if msg.contains("No such file") || msg.contains("not found") {
+                "claude not found on PATH".to_string()
+            } else {
+                msg
+            };
+            let _ = tx.send(RunnerEvent::SpawnError(friendly));
+            return;
+        }
+    };
+
+    let _ = tx.send(RunnerEvent::Bytes(
+        format!("[synth] spawned claude pid={:?}\r\n", child.process_id()).into_bytes(),
+    ));
+
+    let mut killer = child.clone_killer();
+
+    // Drop the slave end in the parent so EOF propagates when the child exits.
+    drop(pair.slave);
+
+    let master = pair.master;
+
+    let reader = match master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = tx.send(RunnerEvent::SpawnError(format!("PTY reader: {e}")));
+            return;
+        }
+    };
+
+    // Read PTY output in a blocking thread.
+    let tx_read = tx.clone();
+    let read_handle = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        let mut reader = reader;
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if tx_read.send(RunnerEvent::Bytes(buf[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Forward resize events to the PTY master (master is moved here).
+    drop(tokio::spawn(async move {
+        use portable_pty::PtySize;
+        let mut resize_rx = resize_rx;
+        while let Some((cols, rows)) = resize_rx.recv().await {
+            let _ = master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+    }));
+
+    // Wait for the child to exit in a blocking task.
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<u32>();
+    tokio::task::spawn_blocking(move || {
+        let code = child
+            .wait()
+            .map(|s| if s.success() { 0u32 } else { 1u32 })
+            .unwrap_or(1u32);
+        let _ = done_tx.send(code);
+    });
+
+    let (was_killed, exit_code) = tokio::select! {
+        result = done_rx => (false, Some(result.unwrap_or(1))),
+        _ = kill_rx => (true, None),
+    };
+
+    if was_killed {
+        let _ = killer.kill();
+    }
+
+    // Drain remaining PTY output with a short timeout (same as runner_task).
+    let _ = tokio::time::timeout(Duration::from_millis(500), read_handle).await;
+
+    let _ = tx.send(RunnerEvent::Exited(exit_code));
+}
+
 /// Maps a crossterm `KeyEvent` to the raw bytes that should be sent to the PTY.
 ///
 /// Returns `None` for keys that have no meaningful PTY representation (function
@@ -574,6 +703,15 @@ pub struct App {
     /// When `Some`, the full-screen PRD metadata editor is active.
     /// All key input is routed to the editor; normal TUI is hidden.
     pub prd_editor: Option<PrdEditorState>,
+    /// VT100 parser for synthesis subprocess output.
+    /// `None` until the first synthesis has been started.
+    pub synth_parser: Option<VtParser>,
+    /// Receiver for synthesis subprocess events; `Some` only while synthesis is running.
+    pub synth_rx: Option<UnboundedReceiver<RunnerEvent>>,
+    /// Kill signal sender for the synthesis subprocess.
+    pub synth_kill_tx: Option<oneshot::Sender<()>>,
+    /// Name of the workflow currently being (or last) synthesized.
+    pub synth_workflow_name: Option<String>,
 }
 
 impl App {
@@ -610,6 +748,10 @@ impl App {
             _watcher: watcher_opt,
             notification: None,
             prd_editor: None,
+            synth_parser: None,
+            synth_rx: None,
+            synth_kill_tx: None,
+            synth_workflow_name: None,
         };
         app.load_current_workflow();
         app
@@ -619,6 +761,7 @@ impl App {
         while self.running {
             self.check_status_timeout();
             self.drain_runner_channels();
+            self.drain_synth_channel();
             let watcher_events = self.drain_watcher_channel();
             if !watcher_events.is_empty() {
                 let first_path = watcher_events.first().map(|e| e.path.clone());
@@ -665,6 +808,10 @@ impl App {
                     tab.parser = VtParser::new(pty_rows, cols, 1000);
                     tab.log_scroll = 0;
                 }
+                // Recreate synthesis parser with new dimensions (same limitation as runner tabs).
+                if self.synth_parser.is_some() {
+                    self.synth_parser = Some(VtParser::new(pty_rows, cols, 1000));
+                }
                 self.initial_size = (cols, rows);
             }
             Event::Key(key) => {
@@ -699,8 +846,22 @@ impl App {
                         }
                         KeyCode::Up | KeyCode::Char('k') => self.move_up(),
                         KeyCode::Down | KeyCode::Char('j') => self.move_down(),
-                        KeyCode::Char('r') => self.start_runner(),
-                        KeyCode::Char('s') => self.stop_runner(),
+                        // [r]un is disabled while synthesis is in progress.
+                        KeyCode::Char('r') => {
+                            if !self.is_synthesizing() {
+                                self.start_runner();
+                            }
+                        }
+                        // [s]top: stops synthesis if running, otherwise stops the active runner.
+                        KeyCode::Char('s') => {
+                            if self.is_synthesizing() {
+                                self.stop_synthesizing();
+                            } else {
+                                self.stop_runner();
+                            }
+                        }
+                        // Shift+S: trigger prd-synth synthesis for the selected workflow.
+                        KeyCode::Char('S') => self.start_synthesizing(),
                         KeyCode::Char('n') => self.open_new_workflow_dialog(),
                         KeyCode::Char('i') => self.open_import_prd_dialog(),
                         KeyCode::Char('e') => self.edit_current_plan(terminal)?,
@@ -2165,6 +2326,148 @@ impl App {
                             self.runner_tabs[tab_idx].insert_mode = false;
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// Returns `true` while the synthesis subprocess is running.
+    pub fn is_synthesizing(&self) -> bool {
+        self.synth_rx.is_some()
+    }
+
+    /// Starts prd-synth synthesis for the currently selected workflow.
+    ///
+    /// Checks that prd-source.md exists in the workflow directory; shows a status
+    /// error if not. Spawns `synth_task` via a PTY and wires up the event channel.
+    fn start_synthesizing(&mut self) {
+        let Some(idx) = self.selected_workflow else {
+            return;
+        };
+        let Some(name) = self.workflows.get(idx).cloned() else {
+            return;
+        };
+
+        // Refuse to start a second synthesis while one is already running.
+        if self.is_synthesizing() {
+            self.status_message = Some("Synthesis already in progress".to_string());
+            self.status_message_expires = Some(Instant::now() + Duration::from_secs(2));
+            return;
+        }
+
+        let workflow_dir = self.store.workflow_dir(&name);
+        let prd_source = workflow_dir.join("prd-source.md");
+        if !prd_source.exists() {
+            self.status_message =
+                Some("No prd-source.md \u{2014} press [i] to import".to_string());
+            self.status_message_expires = Some(Instant::now() + Duration::from_secs(4));
+            return;
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<RunnerEvent>();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
+
+        let (cols, rows) = self.initial_size;
+        let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+
+        self.synth_parser = Some(VtParser::new(pty_rows, cols, 1000));
+        self.synth_rx = Some(rx);
+        self.synth_kill_tx = Some(kill_tx);
+        self.synth_workflow_name = Some(name.clone());
+        self.resize_txs.push(resize_tx);
+
+        drop(tokio::spawn(synth_task(
+            workflow_dir,
+            tx,
+            kill_rx,
+            (cols, pty_rows),
+            resize_rx,
+        )));
+    }
+
+    /// Kills the running synthesis subprocess immediately.
+    /// Writes a "stopped" message to the synthesis log parser.
+    fn stop_synthesizing(&mut self) {
+        if let Some(kill_tx) = self.synth_kill_tx.take() {
+            let _ = kill_tx.send(());
+        }
+        // Clear the channel so drain_synth_channel no longer processes events.
+        self.synth_rx = None;
+        if let Some(parser) = &mut self.synth_parser {
+            parser.process(b"\r\n--- Synthesis stopped ---\r\n");
+        }
+    }
+
+    /// Drains pending events from the synthesis subprocess channel.
+    /// Feeds raw bytes into the synthesis VT100 parser and handles process exit.
+    fn drain_synth_channel(&mut self) {
+        if self.synth_rx.is_none() {
+            return;
+        }
+
+        let mut byte_chunks: Vec<Vec<u8>> = Vec::new();
+        let mut done = false;
+        let mut spawn_error: Option<String> = None;
+        let mut exited_code: Option<Option<u32>> = None;
+
+        {
+            let rx = match self.synth_rx.as_mut() {
+                Some(r) => r,
+                None => return,
+            };
+            loop {
+                use tokio::sync::mpsc::error::TryRecvError;
+                match rx.try_recv() {
+                    Ok(RunnerEvent::Bytes(bytes)) => byte_chunks.push(bytes),
+                    Ok(RunnerEvent::Exited(code_opt)) => {
+                        exited_code = Some(code_opt);
+                        done = true;
+                        break;
+                    }
+                    Ok(RunnerEvent::SpawnError(msg)) => {
+                        spawn_error = Some(msg);
+                        done = true;
+                        break;
+                    }
+                    // Synthesis doesn't emit Complete or TokenUsage events; ignore them.
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        } // rx borrow released
+
+        for chunk in byte_chunks {
+            if let Some(parser) = &mut self.synth_parser {
+                parser.process(&chunk);
+            }
+        }
+
+        if done {
+            self.synth_rx = None;
+            self.synth_kill_tx = None;
+
+            if let Some(msg) = spawn_error {
+                let err_msg = format!("\r\nSpawnError: {msg}\r\n");
+                if let Some(parser) = &mut self.synth_parser {
+                    parser.process(err_msg.as_bytes());
+                }
+                self.status_message = Some(msg);
+                self.status_message_expires = None; // persist until dismissed
+            } else {
+                let summary = match exited_code {
+                    Some(None) => "\r\n--- Synthesis stopped ---\r\n".to_string(),
+                    Some(Some(code)) => {
+                        format!("\r\n--- Synthesis exited (code: {code}) ---\r\n")
+                    }
+                    None => "\r\n--- Synthesis exited ---\r\n".to_string(),
+                };
+                if let Some(parser) = &mut self.synth_parser {
+                    parser.process(summary.as_bytes());
                 }
             }
         }

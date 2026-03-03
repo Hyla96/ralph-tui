@@ -174,9 +174,28 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    // Log panel: empty on the Workflows tab (runner logs live on runner tabs).
-    let log_block = Block::default().borders(Borders::ALL).title("Log");
-    frame.render_widget(log_block, vertical[1]);
+    // Log panel: shows synthesis PTY output when active, empty otherwise.
+    if let Some(parser) = &app.synth_parser {
+        let synth_name = app
+            .synth_workflow_name
+            .as_deref()
+            .unwrap_or("unknown");
+        let synthesizing = app.is_synthesizing();
+        let title_text = if synthesizing {
+            format!("Synthesis: {} \u{2014} running", synth_name)
+        } else {
+            format!("Synthesis: {}", synth_name)
+        };
+        let log_block = Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(title_text, Style::default().fg(CLAUDE_ORANGE)));
+        use tui_term::widget::PseudoTerminal;
+        let pseudo_term = PseudoTerminal::new(parser.screen()).block(log_block);
+        frame.render_widget(pseudo_term, vertical[1]);
+    } else {
+        let log_block = Block::default().borders(Borders::ALL).title("Log");
+        frame.render_widget(log_block, vertical[1]);
+    }
 
     // Status bar: workflow management hints + optional right-aligned notification.
     let notif = app.notification.as_ref().map(|(s, _)| s.as_str());
@@ -192,8 +211,19 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
             spans.extend(notification_right_spans(left_len, n, bar_width));
         }
         Line::from(spans)
+    } else if app.is_synthesizing() {
+        let left = "[s]top  Synthesizing\u{2026}";
+        let left_len = left.chars().count();
+        let mut spans = vec![Span::styled(
+            left.to_string(),
+            Style::default().fg(CLAUDE_ORANGE),
+        )];
+        if let Some(n) = notif {
+            spans.extend(notification_right_spans(left_len, n, bar_width));
+        }
+        Line::from(spans)
     } else {
-        let left = "[r]un  [n]ew  [i]mport  [e]dit  [d]elete  [?]help  [q]uit";
+        let left = "[r]un  [S]ynth  [n]ew  [i]mport  [e]dit  [d]elete  [?]help  [q]uit";
         let left_len = left.chars().count();
         let mut spans = vec![Span::raw(left)];
         if let Some(n) = notif {
@@ -634,14 +664,15 @@ fn draw_import_prd_dialog(
 }
 
 fn draw_help_dialog(frame: &mut Frame, area: Rect) {
-    // 46 wide (2 border + 44 content), 10 tall (2 border + 8 keybinding rows)
-    let dialog_rect = centered_rect(46, 10, area);
+    // 52 wide (2 border + 50 content), 13 tall (2 border + 11 keybinding rows)
+    let dialog_rect = centered_rect(52, 13, area);
     frame.render_widget(Clear, dialog_rect);
 
     let lines = vec![
         Line::from("  j/k/\u{2191}\u{2193}   navigate workflows"),
         Line::from("  r         run ralph loop"),
-        Line::from("  s         stop loop"),
+        Line::from("  s         stop loop / synthesis"),
+        Line::from("  S         synthesize prd.json from prd-source.md"),
         Line::from("  n         new workflow"),
         Line::from("  i         import PRD file"),
         Line::from("  e         edit prd.json"),

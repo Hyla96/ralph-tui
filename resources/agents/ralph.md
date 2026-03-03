@@ -35,7 +35,6 @@ When operating autonomously: flag ambiguity, document assumptions, log reasoning
     r2. Append to `progress.txt` (see format below)
 12. Update `prd.json`: set `passes: true` for the completed task
 13. Signal completion to the runner:
-    - Run `Bash("printf '0' > \"$RALPH_PLAN_DIR/.complete\"")` to write the exit marker.
     - Output `<promise>COMPLETE</promise>` then stop. Do not start the next task.
 
 ## Validation

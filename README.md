@@ -1,4 +1,4 @@
-# ralph-cli
+# ralph-tui
 
 A Rust TUI for managing and running [Ralph](https://ghuntley.com/ralph/) agent loops with [Claude Code](https://github.com/anthropics/claude-code).
 
@@ -6,7 +6,7 @@ A Rust TUI for managing and running [Ralph](https://ghuntley.com/ralph/) agent l
 
 ## What it does
 
-Run `ralph-cli` inside any git repository to:
+Run `ralph-tui` inside any git repository to:
 
 - Browse all workflows stored in `.ralph/workflows/`
 - See per-workflow task progress at a glance
@@ -99,7 +99,7 @@ Press `t`, then:
 
 ## Getting Started
 
-ralph-cli is a Rust TUI that manages the Ralph agent loop. Ralph is a Claude Code agent that reads a `prd.json` workflow file, implements one task at a time, runs validation, and commits the result. ralph-cli is the controller: it discovers workflows in a git repo, lets you start and stop agent loops, and streams the live output. You bring the repo and the task spec; ralph-cli and Ralph take care of the rest.
+ralph-tui is a Rust TUI that manages the Ralph agent loop. Ralph is a Claude Code agent that reads a `prd.json` workflow file, implements one task at a time, runs validation, and commits the result. ralph-tui is the controller: it discovers workflows in a git repo, lets you start and stop agent loops, and streams the live output. You bring the repo and the task spec; ralph-tui and Ralph take care of the rest.
 
 ### Step 1 — Prerequisites
 
@@ -117,8 +117,8 @@ ralph-cli is a Rust TUI that manages the Ralph agent loop. Ralph is a Claude Cod
 ### Step 2 — Clone the repository
 
 ```sh
-git clone https://github.com/your-org/ralph-cli.git
-cd ralph-cli
+git clone https://github.com/your-org/ralph-tui.git
+cd ralph-tui
 ```
 
 If you are reviewing a pull request, check out the relevant branch:
@@ -141,11 +141,11 @@ This copies the `/prd` and `/prd-synth` skills and the `ralph` agent into `~/.cl
 just install
 ```
 
-This runs `cargo install --path .` and installs the `ralph-cli` binary on your `PATH`.
+This runs `cargo install --path .` and installs the `ralph-tui` binary on your `PATH`.
 
 ### Step 5 — Create a sandbox repository
 
-> **Note:** ralph-cli must always be run from inside a git repository.
+> **Note:** ralph-tui must always be run from inside a git repository.
 
 ```sh
 mkdir my-project && cd my-project && git init && git commit --allow-empty -m 'init'
@@ -177,12 +177,12 @@ In the same Claude Code session, run:
 
 This emits `.ralph/workflows/<name>/prd.json` containing the structured task list.
 
-### Step 8 — Exit Claude and launch ralph-cli
+### Step 8 — Exit Claude and launch ralph-tui
 
 Exit the Claude Code session, then from the repo root:
 
 ```sh
-ralph-cli
+ralph-tui
 ```
 
 ### Step 9 — Start the agent loop

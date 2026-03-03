@@ -49,6 +49,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::RunnerHelp) => {
             draw_runner_help_dialog(frame, frame.area());
         }
+        Some(Dialog::ImportPrd {
+            input,
+            error,
+            confirm_overwrite,
+            ..
+        }) => {
+            draw_import_prd_dialog(frame, frame.area(), input, error, *confirm_overwrite);
+        }
         None => {}
     }
 }
@@ -179,7 +187,7 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
         }
         Line::from(spans)
     } else {
-        let left = "[r]un  [n]ew  [e]dit  [d]elete  [?]help  [q]uit";
+        let left = "[r]un  [n]ew  [i]mport  [e]dit  [d]elete  [?]help  [q]uit";
         let left_len = left.chars().count();
         let mut spans = vec![Span::raw(left)];
         if let Some(n) = notif {
@@ -572,6 +580,40 @@ fn draw_new_workflow_dialog(frame: &mut Frame, area: Rect, input: &str, error: &
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
+fn draw_import_prd_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    input: &str,
+    error: &Option<String>,
+    confirm_overwrite: bool,
+) {
+    // 72 chars wide (2 border + 70 content), 4 rows tall (2 border + 2 content lines)
+    let dialog_rect = centered_rect(72, 4, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Import PRD File");
+
+    let lines: Vec<Line> = if confirm_overwrite {
+        vec![
+            Line::from("Overwrite existing prd-source.md? [y/N]"),
+            Line::from(""),
+        ]
+    } else {
+        let prompt = format!("Import PRD file: {}_", input);
+        match error {
+            Some(err) => vec![
+                Line::from(prompt),
+                Line::from(Span::styled(err.as_str(), Style::default().fg(Color::Red))),
+            ],
+            None => vec![Line::from(prompt), Line::from("")],
+        }
+    };
+
+    frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
+}
+
 fn draw_help_dialog(frame: &mut Frame, area: Rect) {
     // 46 wide (2 border + 44 content), 10 tall (2 border + 8 keybinding rows)
     let dialog_rect = centered_rect(46, 10, area);
@@ -582,6 +624,7 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
         Line::from("  r         run ralph loop"),
         Line::from("  s         stop loop"),
         Line::from("  n         new workflow"),
+        Line::from("  i         import PRD file"),
         Line::from("  e         edit prd.json"),
         Line::from("  E         open form editor"),
         Line::from("  d         delete workflow"),

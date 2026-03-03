@@ -82,6 +82,13 @@ pub enum Dialog {
     },
     Help,
     RunnerHelp,
+    ImportPrd {
+        workflow_name: String,
+        input: String,
+        error: Option<String>,
+        /// When true, prd-source.md already exists and the user is being asked to confirm overwrite.
+        confirm_overwrite: bool,
+    },
 }
 
 /// Which field of the metadata form currently has focus.
@@ -691,6 +698,7 @@ impl App {
                         KeyCode::Char('r') => self.start_runner(),
                         KeyCode::Char('s') => self.stop_runner(),
                         KeyCode::Char('n') => self.open_new_workflow_dialog(),
+                        KeyCode::Char('i') => self.open_import_prd_dialog(),
                         KeyCode::Char('e') => self.edit_current_plan(terminal)?,
                         KeyCode::Char('E') => self.open_prd_editor(),
                         KeyCode::Char('d') => self.open_delete_workflow_dialog(),
@@ -916,6 +924,52 @@ impl App {
                 let dir = self.store.workflow_dir(&name);
                 let _ = std::fs::remove_dir_all(dir);
                 self.refresh_workflows_after_delete(old_idx);
+            }
+            return;
+        }
+
+        // ImportPrd dialog.
+        if matches!(self.dialog, Some(Dialog::ImportPrd { .. })) {
+            let (workflow_name, input, confirm_overwrite) = match &self.dialog {
+                Some(Dialog::ImportPrd {
+                    workflow_name,
+                    input,
+                    confirm_overwrite,
+                    ..
+                }) => (workflow_name.clone(), input.clone(), *confirm_overwrite),
+                _ => return,
+            };
+
+            if confirm_overwrite {
+                // Overwrite confirmation: y proceeds, anything else cancels.
+                self.dialog = None;
+                if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                    self.do_import_prd_copy(&workflow_name, &input);
+                }
+                return;
+            }
+
+            // Path input phase.
+            match code {
+                KeyCode::Esc => {
+                    self.dialog = None;
+                }
+                KeyCode::Backspace => {
+                    if let Some(Dialog::ImportPrd { input, error, .. }) = &mut self.dialog {
+                        input.pop();
+                        *error = None;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(Dialog::ImportPrd { input, error, .. }) = &mut self.dialog {
+                        input.push(c);
+                        *error = None;
+                    }
+                }
+                KeyCode::Enter => {
+                    self.handle_import_prd_submit(&workflow_name, &input);
+                }
+                _ => {}
             }
             return;
         }
@@ -1603,6 +1657,92 @@ impl App {
             input: String::new(),
             error: None,
         });
+    }
+
+    /// Opens the ImportPrd dialog for the currently selected workflow.
+    fn open_import_prd_dialog(&mut self) {
+        let Some(idx) = self.selected_workflow else {
+            return;
+        };
+        let Some(name) = self.workflows.get(idx).cloned() else {
+            return;
+        };
+        self.dialog = Some(Dialog::ImportPrd {
+            workflow_name: name,
+            input: String::new(),
+            error: None,
+            confirm_overwrite: false,
+        });
+    }
+
+    /// Validates the path entered in the ImportPrd dialog and either copies the file,
+    /// asks for overwrite confirmation, or shows an inline error.
+    fn handle_import_prd_submit(&mut self, workflow_name: &str, input: &str) {
+        // Resolve relative paths from the repo root.
+        let path = if std::path::Path::new(input).is_absolute() {
+            std::path::PathBuf::from(input)
+        } else {
+            self.store.root().join(input)
+        };
+
+        // Validate that the path exists.
+        if !path.exists() {
+            if let Some(Dialog::ImportPrd { error, .. }) = &mut self.dialog {
+                *error = Some("File not found".to_string());
+            }
+            return;
+        }
+
+        // Validate .md extension.
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            if let Some(Dialog::ImportPrd { error, .. }) = &mut self.dialog {
+                *error = Some("Not a .md file".to_string());
+            }
+            return;
+        }
+
+        // If prd-source.md already exists, prompt for overwrite confirmation.
+        let dest = self.store.workflow_dir(workflow_name).join("prd-source.md");
+        if dest.exists() {
+            if let Some(Dialog::ImportPrd {
+                confirm_overwrite,
+                error,
+                ..
+            }) = &mut self.dialog
+            {
+                *confirm_overwrite = true;
+                *error = None;
+            }
+            return;
+        }
+
+        // No conflict — copy immediately.
+        self.do_import_prd_copy(workflow_name, input);
+    }
+
+    /// Copies the source markdown file to `<workflow_dir>/prd-source.md`.
+    /// Closes the dialog and sets a notification on success, or sets a timed
+    /// status message on failure.
+    fn do_import_prd_copy(&mut self, workflow_name: &str, input: &str) {
+        let path = if std::path::Path::new(input).is_absolute() {
+            std::path::PathBuf::from(input)
+        } else {
+            self.store.root().join(input)
+        };
+
+        let dest = self.store.workflow_dir(workflow_name).join("prd-source.md");
+        match std::fs::copy(&path, &dest) {
+            Ok(_) => {
+                self.dialog = None;
+                self.notification = Some(("PRD imported".to_string(), Instant::now()));
+            }
+            Err(e) => {
+                self.dialog = None;
+                self.status_message = Some(format!("Import failed: {e}"));
+                self.status_message_expires =
+                    Some(Instant::now() + Duration::from_secs(3));
+            }
+        }
     }
 
     fn open_delete_workflow_dialog(&mut self) {

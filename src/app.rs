@@ -80,6 +80,10 @@ pub enum Dialog {
     DeleteWorkflow {
         name: String,
     },
+    ContinuePrompt {
+        next_id: String,
+        next_title: String,
+    },
     Help,
     RunnerHelp,
     ImportPrd {
@@ -1871,6 +1875,43 @@ impl App {
 
         // Reload the currently selected workflow from disk.
         self.load_current_workflow();
+
+        // Clear a stale ContinuePrompt if the referenced task no longer needs to run.
+        if let Some(Dialog::ContinuePrompt { next_id, .. }) = &self.dialog {
+            let next_id_clone = next_id.clone();
+
+            // Find the workflow name for the active runner tab.
+            let tab_workflow_name = (self.active_tab > 0)
+                .then(|| self.runner_tabs.get(self.active_tab - 1))
+                .flatten()
+                .map(|t| t.workflow_name.clone());
+
+            let task_still_pending = tab_workflow_name
+                .as_ref()
+                .map(|name| {
+                    let dir = self.store.workflow_dir(name);
+                    Workflow::load(&dir)
+                        .ok()
+                        .map(|w| {
+                            w.prd
+                                .tasks
+                                .iter()
+                                .any(|t| t.id == next_id_clone && !t.passes)
+                        })
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            if !task_still_pending {
+                self.dialog = None;
+                if self.active_tab > 0
+                    && let Some(tab) = self.runner_tabs.get_mut(self.active_tab - 1)
+                    && matches!(tab.state, RunnerTabState::Running { .. })
+                {
+                    tab.state = RunnerTabState::Done;
+                }
+            }
+        }
     }
 
     /// Drains runner channels for all active runner tabs.

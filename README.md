@@ -95,6 +95,7 @@ Press `t`, then:
 | `1`–`9`   | Jump to tab by number (1 = Workflows tab) |
 | `←` / `→` | Cycle through tabs with wrapping          |
 
+
 ---
 
 ## Getting Started

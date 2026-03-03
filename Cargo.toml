@@ -1,7 +1,12 @@
 [package]
-name = "ralph-cli"
+name = "ralph-tui"
 version = "0.0.1"
 edition = "2024"
+description = "A terminal user interface (TUI) for running and monitoring Ralph AI workflows"
+
+[[bin]]
+name = "ralph-tui"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.30"

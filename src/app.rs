@@ -97,6 +97,8 @@ pub enum Dialog {
     },
     /// Shown when the user presses [q]; y/Y confirms quit, any other key cancels.
     QuitConfirm,
+    /// Shown when the user presses [s] and the workflow is not complete; y/Y stops, any other key cancels.
+    StopConfirm,
 }
 
 /// Which field of the metadata form currently has focus.
@@ -928,7 +930,25 @@ impl App {
                             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                                 self.running = false;
                             }
-                            KeyCode::Char('s') => self.stop_runner(),
+                            KeyCode::Char('s') => {
+                                let (is_running, workflow_name) = self
+                                    .runner_tabs
+                                    .get(tab_idx)
+                                    .map(|t| {
+                                        (
+                                            matches!(t.state, RunnerTabState::Running { .. }),
+                                            t.workflow_name.clone(),
+                                        )
+                                    })
+                                    .unwrap_or((false, String::new()));
+                                if is_running {
+                                    if self.is_workflow_complete(&workflow_name) {
+                                        self.stop_runner();
+                                    } else {
+                                        self.dialog = Some(Dialog::StopConfirm);
+                                    }
+                                }
+                            }
                             // [r]estart: re-spawn the runner from current plan state when Stopped.
                             // No-op in Running or Done states (button not shown in those states).
                             KeyCode::Char('r') => {
@@ -1100,6 +1120,15 @@ impl App {
             self.dialog = None;
             if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
                 self.running = false;
+            }
+            return;
+        }
+
+        // StopConfirm: y/Y stops the runner (-> Stopped state), any other key cancels.
+        if matches!(self.dialog, Some(Dialog::StopConfirm)) {
+            self.dialog = None;
+            if code == KeyCode::Char('y') || code == KeyCode::Char('Y') {
+                self.stop_runner();
             }
             return;
         }

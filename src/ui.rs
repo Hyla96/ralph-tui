@@ -66,6 +66,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::QuitConfirm) => {
             draw_quit_confirm_dialog(frame, frame.area());
         }
+        Some(Dialog::StopConfirm) => {
+            draw_stop_confirm_dialog(frame, frame.area());
+        }
         None => {}
     }
 }
@@ -179,10 +182,7 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
 
     // Log panel: shows synthesis PTY output when active, empty otherwise.
     if let Some(parser) = &app.synth_parser {
-        let synth_name = app
-            .synth_workflow_name
-            .as_deref()
-            .unwrap_or("unknown");
+        let synth_name = app.synth_workflow_name.as_deref().unwrap_or("unknown");
         let synthesizing = app.is_synthesizing();
         let title_text = if synthesizing {
             format!("Synthesis: {} \u{2014} running", synth_name)
@@ -254,7 +254,11 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
     // 3-section layout: task bar (1 row) | PTY viewport (flexible) | buttons bar (1 row)
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     // Task bar (layout[0]): task title left-aligned, counts (tasks/iter/tokens) right-aligned.
@@ -295,9 +299,8 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                         tab.current_story_input_tokens + tab.current_story_output_tokens;
                     match UsageFile::load(&workflow_dir) {
                         Ok(usage) => {
-                            let session_tokens = usage.total.input_tokens
-                                + usage.total.output_tokens
-                                + task_tokens;
+                            let session_tokens =
+                                usage.total.input_tokens + usage.total.output_tokens + task_tokens;
                             format!(
                                 "task: {}  session: {}",
                                 format_tokens(task_tokens),
@@ -322,7 +325,11 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
             let right_str = format!("{done}/{total} tasks  iter {iter_n}  {token_str}");
             let left_len = task_title.chars().count();
             let mut spans = vec![Span::raw(task_title)];
-            spans.extend(notification_right_spans(left_len, &right_str, task_bar_width));
+            spans.extend(notification_right_spans(
+                left_len,
+                &right_str,
+                task_bar_width,
+            ));
             Line::from(spans)
         }
     };
@@ -351,11 +358,18 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Green),
         ))
     } else if let Some(msg) = &app.status_message {
-        Line::from(Span::styled(msg.to_string(), Style::default().fg(Color::Red)))
+        Line::from(Span::styled(
+            msg.to_string(),
+            Style::default().fg(Color::Red),
+        ))
     } else {
         match &tab.state {
             RunnerTabState::Running { .. } => {
-                let auto_label = if tab.auto_continue { "[a]uto:ON" } else { "[a]uto:OFF" };
+                let auto_label = if tab.auto_continue {
+                    "[a]uto:ON"
+                } else {
+                    "[a]uto:OFF"
+                };
                 // [c]continue is never shown in Running state regardless of auto mode.
                 Line::from(Span::raw(format!(
                     "[i]nsert  [s]stop  {auto_label}  [?]help  [q]uit"
@@ -374,9 +388,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                     Line::from(Span::raw("[x]close  [?]help"))
                 }
             }
-            RunnerTabState::Stopped => {
-                Line::from(Span::raw("[x]close  [r]estart  [?]help"))
-            }
+            RunnerTabState::Stopped => Line::from(Span::raw("[x]close  [r]estart  [?]help")),
             RunnerTabState::Error(_) => Line::from(Span::styled(
                 "[x]close  [q]quit  [?]help",
                 Style::default().fg(Color::Red),
@@ -418,7 +430,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     for (i, tab) in app.runner_tabs.iter().enumerate() {
         let suffix = match &tab.state {
             RunnerTabState::Running { .. } => "",
-            RunnerTabState::Done => " \u{2713}",   // ✓
+            RunnerTabState::Done => " \u{2713}",    // ✓
             RunnerTabState::Stopped => " \u{25a0}", // ■
             RunnerTabState::Error(_) => " !",
         };
@@ -512,13 +524,11 @@ fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
 
     let token_str = match &tab.state {
         RunnerTabState::Running { .. } => {
-            let task_tokens =
-                tab.current_story_input_tokens + tab.current_story_output_tokens;
+            let task_tokens = tab.current_story_input_tokens + tab.current_story_output_tokens;
             match UsageFile::load(&workflow_dir) {
                 Ok(usage) => {
-                    let session_tokens = usage.total.input_tokens
-                        + usage.total.output_tokens
-                        + task_tokens;
+                    let session_tokens =
+                        usage.total.input_tokens + usage.total.output_tokens + task_tokens;
                     format!(
                         "task: {}  session: {}",
                         format_tokens(task_tokens),
@@ -528,20 +538,19 @@ fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
                 Err(_) => format!("task: {}", format_tokens(task_tokens)),
             }
         }
-        RunnerTabState::Done | RunnerTabState::Stopped => {
-            match UsageFile::load(&workflow_dir) {
-                Ok(usage) => {
-                    let session_tokens =
-                        usage.total.input_tokens + usage.total.output_tokens;
-                    format!("session: {}", format_tokens(session_tokens))
-                }
-                Err(_) => "session: ? tok".to_string(),
+        RunnerTabState::Done | RunnerTabState::Stopped => match UsageFile::load(&workflow_dir) {
+            Ok(usage) => {
+                let session_tokens = usage.total.input_tokens + usage.total.output_tokens;
+                format!("session: {}", format_tokens(session_tokens))
             }
-        }
+            Err(_) => "session: ? tok".to_string(),
+        },
         RunnerTabState::Error(_) => unreachable!(),
     };
 
-    Some(format!("{task_title}  {done}/{total} tasks  iter {iter_n}  {token_str}"))
+    Some(format!(
+        "{task_title}  {done}/{total} tasks  iter {iter_n}  {token_str}"
+    ))
 }
 
 /// Builds right-aligned notification spans to append to a status bar line.
@@ -612,6 +621,18 @@ fn draw_quit_confirm_dialog(frame: &mut Frame, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title("Quit");
     frame.render_widget(
         Paragraph::new("Quit ralph-tui? [y/N]").block(block),
+        dialog_rect,
+    );
+}
+
+fn draw_stop_confirm_dialog(frame: &mut Frame, area: Rect) {
+    // 46 chars wide (2 border + 44 content), 3 rows tall (2 border + 1 content line)
+    let dialog_rect = centered_rect(46, 3, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    let block = Block::default().borders(Borders::ALL).title("Stop");
+    frame.render_widget(
+        Paragraph::new("Workflow not complete. Stop? [y/N]").block(block),
         dialog_rect,
     );
 }
@@ -712,7 +733,7 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled("  -- Normal mode --", header_style)),
         Line::from("  i           enter insert mode"),
-        Line::from("  s      stop loop"),
+        Line::from("  s           stop loop"),
         Line::from("  a           toggle auto-continue"),
         Line::from("  \u{2191}/k         scroll up"),
         Line::from("  \u{2193}/j         scroll down"),

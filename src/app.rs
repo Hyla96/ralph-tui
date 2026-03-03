@@ -28,6 +28,8 @@ const PTY_ROW_OVERHEAD: u16 = 5;
 pub enum RunnerTabState {
     Running { iteration: u32 },
     Done,
+    /// Runner was manually stopped by the user (via [s]top).
+    Stopped,
     Error(String),
 }
 
@@ -932,7 +934,10 @@ impl App {
                                     .runner_tabs
                                     .get(tab_idx)
                                     .map(|t| {
-                                        matches!(t.state, RunnerTabState::Done) && !t.auto_continue
+                                        matches!(
+                                            t.state,
+                                            RunnerTabState::Done | RunnerTabState::Stopped
+                                        ) && !t.auto_continue
                                     })
                                     .unwrap_or(false);
                                 if can_continue {
@@ -2530,8 +2535,8 @@ impl App {
         if let Some(kill_tx) = tab.runner_kill_tx.take() {
             let _ = kill_tx.send(());
         }
-        // Mark Done immediately so drain_tab_channel skips re-processing on Exited.
-        tab.state = RunnerTabState::Done;
+        // Mark Stopped immediately so drain_tab_channel skips re-processing on Exited.
+        tab.state = RunnerTabState::Stopped;
         tab.insert_mode = false;
     }
 
@@ -2660,7 +2665,7 @@ impl App {
             };
             let iteration = match tab.state {
                 RunnerTabState::Running { iteration } => iteration,
-                RunnerTabState::Done => tab.iterations_used,
+                RunnerTabState::Done | RunnerTabState::Stopped => tab.iterations_used,
                 RunnerTabState::Error(_) => return,
             };
             (tab.workflow_name.clone(), iteration)

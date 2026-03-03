@@ -265,7 +265,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         state => {
             let iter_n = match state {
                 RunnerTabState::Running { iteration } => *iteration,
-                RunnerTabState::Done => tab.iterations_used,
+                RunnerTabState::Done | RunnerTabState::Stopped => tab.iterations_used,
                 RunnerTabState::Error(_) => unreachable!(),
             };
             // Left side: task title truncated to 40 visible chars.
@@ -304,14 +304,16 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                         Err(_) => format!("task: {}", format_tokens(task_tokens)),
                     }
                 }
-                RunnerTabState::Done => match UsageFile::load(&workflow_dir) {
-                    Ok(usage) => {
-                        let session_tokens =
-                            usage.total.input_tokens + usage.total.output_tokens;
-                        format!("session: {}", format_tokens(session_tokens))
+                RunnerTabState::Done | RunnerTabState::Stopped => {
+                    match UsageFile::load(&workflow_dir) {
+                        Ok(usage) => {
+                            let session_tokens =
+                                usage.total.input_tokens + usage.total.output_tokens;
+                            format!("session: {}", format_tokens(session_tokens))
+                        }
+                        Err(_) => "session: ? tok".to_string(),
                     }
-                    Err(_) => "session: ? tok".to_string(),
-                },
+                }
                 RunnerTabState::Error(_) => unreachable!(),
             };
             let right_str = format!("{done}/{total} tasks  iter {iter_n}  {token_str}");
@@ -364,7 +366,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::raw(suffix));
                 Line::from(spans)
             }
-            RunnerTabState::Done => {
+            RunnerTabState::Done | RunnerTabState::Stopped => {
                 let dim_style = Style::default().fg(Color::DarkGray);
                 // [c]ontinue is active when auto_continue=false, dimmed when auto_continue=true.
                 let continue_span = if tab.auto_continue {
@@ -415,7 +417,8 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     for (i, tab) in app.runner_tabs.iter().enumerate() {
         let suffix = match &tab.state {
             RunnerTabState::Running { .. } => "",
-            RunnerTabState::Done => " \u{2713}", // ✓
+            RunnerTabState::Done => " \u{2713}",   // ✓
+            RunnerTabState::Stopped => " \u{25a0}", // ■
             RunnerTabState::Error(_) => " !",
         };
         entries.push((
@@ -484,7 +487,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
     let iter_n = match &tab.state {
         RunnerTabState::Running { iteration } => *iteration,
-        RunnerTabState::Done => tab.iterations_used,
+        RunnerTabState::Done | RunnerTabState::Stopped => tab.iterations_used,
         RunnerTabState::Error(_) => return None,
     };
 
@@ -524,14 +527,16 @@ fn runner_tab_context(app: &App, tab: &RunnerTab) -> Option<String> {
                 Err(_) => format!("task: {}", format_tokens(task_tokens)),
             }
         }
-        RunnerTabState::Done => match UsageFile::load(&workflow_dir) {
-            Ok(usage) => {
-                let session_tokens =
-                    usage.total.input_tokens + usage.total.output_tokens;
-                format!("session: {}", format_tokens(session_tokens))
+        RunnerTabState::Done | RunnerTabState::Stopped => {
+            match UsageFile::load(&workflow_dir) {
+                Ok(usage) => {
+                    let session_tokens =
+                        usage.total.input_tokens + usage.total.output_tokens;
+                    format!("session: {}", format_tokens(session_tokens))
+                }
+                Err(_) => "session: ? tok".to_string(),
             }
-            Err(_) => "session: ? tok".to_string(),
-        },
+        }
         RunnerTabState::Error(_) => unreachable!(),
     };
 

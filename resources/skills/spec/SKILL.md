@@ -1,12 +1,12 @@
 ---
-name: prd
-description: "Generate a draft Product Requirements Document (PRD) for a new feature with research markers. Use when planning a feature, starting a new project, or when asked to create a PRD. Triggers on: create a prd, write prd for, plan this feature, requirements for, spec out."
+name: spec
+description: "Generate a draft spec for a new feature with research markers. Use when planning a feature, starting a new project, or when asked to create a spec. Triggers on: create a spec, write spec for, plan this feature, requirements for, spec out."
 user-invocable: true
 ---
 
-# PRD Generator
+# Spec Generator
 
-Create draft Product Requirements Documents that are clear, actionable, and include research markers for the prd-researcher agent to fill in.
+Create draft specs that are clear, actionable, and include research markers for the spec-researcher agent to fill in.
 
 ---
 
@@ -14,10 +14,10 @@ Create draft Product Requirements Documents that are clear, actionable, and incl
 
 1. Receive a feature description from the user
 2. Ask as many essential clarifying questions (with lettered options) as needed
-3. Generate a structured **draft** PRD based on answers, with research markers
-4. Save to `tasks/prd-[feature-name].md`
+3. Generate a structured **draft** spec based on answers, with research markers
+4. Save to `.ralph/specs/[feature-name]/spec-source.md`
 
-**Important:** Do NOT start implementing. Just create the draft PRD. The prd-researcher agent will enrich it with research findings before finalization.
+**Important:** Do NOT start implementing. Just create the draft spec. The spec-researcher agent will enrich it with research findings before finalization.
 
 ---
 
@@ -56,9 +56,9 @@ This lets users respond with "1A, 2C, 3B" for quick iteration. Remember to inden
 
 ---
 
-## Step 2: PRD Structure
+## Step 2: Spec Structure
 
-Generate the PRD with these sections. This is a **draft** PRD — sections 3 and 4 are preliminary and will be refined after research.
+Generate the spec with these sections. This is a **draft** spec — sections 3 and 4 are preliminary and will be refined after research.
 
 ### 1. Introduction/Overview
 
@@ -68,9 +68,9 @@ Brief description of the feature and the problem it solves.
 
 Specific, measurable objectives (bullet list).
 
-### 3. User Stories [DRAFT]
+### 3. Tasks [DRAFT]
 
-Mark the section heading as `## User Stories [DRAFT]` in the output.
+Mark the section heading as `## Tasks [DRAFT]` in the output.
 
 Each task needs:
 
@@ -83,7 +83,7 @@ Each task should be small enough to implement in one focused session.
 **Format:**
 
 ```markdown
-### US-001: [Title]
+### TASK-001: [Title]
 
 **Description:** As a [user], I want [feature] so that [benefit].
 
@@ -92,7 +92,7 @@ Each task should be small enough to implement in one focused session.
 - [ ] Specific verifiable criterion
 - [ ] Another criterion
 - [ ] Typecheck/lint passes
-- [ ] **[UI stories only]** Verify in browser using dev-browser skill
+- [ ] **[UI tasks only]** Verify in browser using dev-browser skill
 ```
 
 **Important:**
@@ -140,14 +140,14 @@ Remaining questions or areas needing clarification.
 
 ### 10. Research Needed
 
-List specific topics the prd-researcher agent should investigate. Include:
+List specific topics the spec-researcher agent should investigate. Include:
 
 - Best practices and patterns for the problem domain
 - Libraries or dependencies that might be relevant
 - How competitors or similar projects handle this
 - Existing codebase patterns or modules that relate to this feature
 
-**Format in the output PRD:**
+**Format in the output spec:**
 
 ```markdown
 ## Research Needed
@@ -163,35 +163,35 @@ Each item should be specific enough that a researcher agent knows exactly what t
 
 ### 11. Research Findings
 
-Add an empty section with the following subsections. The prd-researcher agent will fill these in.
+Add an empty section with the following subsections. The spec-researcher agent will fill these in.
 
-**Format in the output PRD:**
+**Format in the output spec:**
 
 ```markdown
 ## Research Findings
 
 ### Best Practices
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Library/Dependency Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Competitive Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Codebase Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 ```
 
 ---
 
 ## Writing for Junior Developers
 
-The PRD reader may be a junior developer or AI agent. Therefore:
+The spec reader may be a junior developer or AI agent. Therefore:
 
 - Be explicit and unambiguous
 - Avoid jargon or explain it
@@ -204,15 +204,15 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 ## Output
 
 - **Format:** Markdown (`.md`)
-- **Location:** `tasks/`
-- **Filename:** `prd-[feature-name].md` (kebab-case)
+- **Location:** `.ralph/specs/[feature-name]/`
+- **Filename:** `spec-source.md`
 
 ---
 
-## Example PRD
+## Example Spec
 
 ```markdown
-# PRD: Task Priority System
+# Spec: Task Priority System
 
 ## Introduction
 
@@ -225,9 +225,9 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - Enable filtering and sorting by priority
 - Default new tasks to medium priority
 
-## User Stories [DRAFT]
+## Tasks [DRAFT]
 
-### US-001: Add priority field to database
+### TASK-001: Add priority field to database
 
 **Description:** As a developer, I need to store task priority so it persists across sessions.
 
@@ -237,7 +237,7 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Generate and run migration successfully
 - [ ] Typecheck passes
 
-### US-002: Display priority indicator on task cards
+### TASK-002: Display priority indicator on task cards
 
 **Description:** As a user, I want to see task priority at a glance so I know what needs attention first.
 
@@ -248,7 +248,7 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Typecheck passes
 - [ ] Verify in browser using dev-browser skill
 
-### US-003: Add priority selector to task edit
+### TASK-003: Add priority selector to task edit
 
 **Description:** As a user, I want to change a task's priority when editing it.
 
@@ -260,7 +260,7 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 - [ ] Typecheck passes
 - [ ] Verify in browser using dev-browser skill
 
-### US-004: Filter tasks by priority
+### TASK-004: Filter tasks by priority
 
 **Description:** As a user, I want to filter the task list to see only high-priority items when I'm focused.
 
@@ -314,34 +314,34 @@ Add priority levels to tasks so users can focus on what matters most. Tasks can 
 
 ### Best Practices
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Library/Dependency Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Competitive Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 
 ### Codebase Analysis
 
-_To be filled by prd-researcher agent._
+_To be filled by spec-researcher agent._
 ```
 
 ---
 
 ## Checklist
 
-Before saving the PRD:
+Before saving the spec:
 
 - [ ] Asked clarifying questions with lettered options
 - [ ] Incorporated user's answers
-- [ ] User stories are small and specific
-- [ ] User Stories section heading includes `[DRAFT]` marker
+- [ ] Tasks are small and specific
+- [ ] Tasks section heading includes `[DRAFT]` marker
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Functional Requirements section heading includes `[DRAFT]` marker
 - [ ] Non-goals section defines clear boundaries
 - [ ] `## Research Needed` section lists specific topics for the researcher agent
 - [ ] `## Research Findings` section present with empty subsections (Best Practices, Library/Dependency Analysis, Competitive Analysis, Codebase Analysis)
-- [ ] Saved to `tasks/prd-[feature-name].md`
+- [ ] Saved to `.ralph/specs/[feature-name]/spec-source.md`

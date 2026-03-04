@@ -49,8 +49,9 @@ fmt-check:
 clean:
     cargo clean
 
-# Copy agents and skills into ~/.claude
+# Copy agents and skills into ~/.claude (removes old prd/prd-clarify skill dirs first)
 set-resources:
+    rm -rf ~/.claude/skills/prd ~/.claude/skills/prd-clarify
     cp -rf ./resources/ ~/.claude/
 
 # Installs this app as `ralph-tui` command

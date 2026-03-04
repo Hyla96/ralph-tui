@@ -909,7 +909,29 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            PrdsFocus::Content => {}
+                            PrdsFocus::Content => match key.code {
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    let line_count =
+                                        self.prds_tab.content.lines().count();
+                                    let (_, rows) = self.initial_size;
+                                    // Layout: 1 tab bar + flexible content + 1 status bar
+                                    // + 2 content border = 4 fixed lines consumed.
+                                    let visible_lines =
+                                        (rows as usize).saturating_sub(4);
+                                    let max_scroll =
+                                        line_count.saturating_sub(visible_lines) as u16;
+                                    self.prds_tab.scroll =
+                                        (self.prds_tab.scroll + 1).min(max_scroll);
+                                }
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    self.prds_tab.scroll =
+                                        self.prds_tab.scroll.saturating_sub(1);
+                                }
+                                KeyCode::Esc => {
+                                    self.prds_tab.focus = PrdsFocus::List;
+                                }
+                                _ => {}
+                            },
                         },
                     }
                 } else if self.active_tab == 1 {

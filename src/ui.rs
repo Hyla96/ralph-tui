@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    // Full-screen PRD metadata editor takes over the entire frame.
+    // Full-screen spec editor takes over the entire frame.
     if let Some(editor) = &app.spec_editor {
         draw_spec_editor(frame, editor, frame.area());
         return;
@@ -75,7 +75,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-/// Renders the PRDs tab: file list (left 30%) | content preview (right 70%) | status bar.
+/// Renders the Specs tab: file list (left 30%) | content preview (right 70%) | status bar.
 fn draw_specs_tab(frame: &mut Frame, app: &App, area: Rect) {
     // Vertical split: main content (flexible) | status bar (1 line)
     let vertical = Layout::default()
@@ -98,14 +98,14 @@ fn draw_specs_tab(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default()
     };
-    let list_title = format!("PRDs ({})", app.specs_tab.files.len());
+    let list_title = format!("Specs ({})", app.specs_tab.files.len());
     let list_block = Block::default()
         .borders(Borders::ALL)
         .title(list_title)
         .border_style(list_border_style);
 
     if app.specs_tab.files.is_empty() {
-        let empty_msg = Paragraph::new("No PRDs found in tasks/").block(list_block);
+        let empty_msg = Paragraph::new("No specs found").block(list_block);
         frame.render_widget(empty_msg, panes[0]);
     } else {
         let items: Vec<ListItem> = app
@@ -516,7 +516,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Build the full list of (label, is_active, is_runner, is_done) entries up front.
     let mut entries: Vec<(String, bool, bool, bool)> = Vec::new();
 
-    entries.push((" [1] PRDs ".to_string(), app.active_tab == 0, false, false));
+    entries.push((" [1] Specs ".to_string(), app.active_tab == 0, false, false));
     entries.push((" [2] Workflows ".to_string(), app.active_tab == 1, false, false));
 
     for (i, tab) in app.runner_tabs.iter().enumerate() {
@@ -784,15 +784,15 @@ fn draw_import_spec_dialog(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Import PRD File");
+        .title("Import Spec File");
 
     let lines: Vec<Line> = if confirm_overwrite {
         vec![
-            Line::from("Overwrite existing prd-source.md? [y/N]"),
+            Line::from("Overwrite existing spec-source.md? [y/N]"),
             Line::from(""),
         ]
     } else {
-        let prompt = format!("Import PRD file: {}_", input);
+        let prompt = format!("Import spec file: {}_", input);
         match error {
             Some(err) => vec![
                 Line::from(prompt),
@@ -814,10 +814,10 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
         Line::from("  j/k/\u{2191}\u{2193}   navigate workflows"),
         Line::from("  r         run ralph loop"),
         Line::from("  s         stop loop / synthesis"),
-        Line::from("  S         synthesize prd.json from prd-source.md"),
+        Line::from("  S         synthesize workflows.json from spec-source.md"),
         Line::from("  n         new workflow"),
-        Line::from("  i         import PRD file"),
-        Line::from("  e         edit prd.json"),
+        Line::from("  i         import spec file"),
+        Line::from("  e         edit workflows.json"),
         Line::from("  E         open form editor"),
         Line::from("  d         delete workflow"),
         Line::from("  ?         help"),
@@ -856,13 +856,13 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
-/// Renders the full-screen PRD editor.
+/// Renders the full-screen spec editor.
 ///
 /// Dispatches to the appropriate sub-renderer based on the active mode:
-///   - TaskDetail: placeholder panel (to be fleshed out in US-003)
+///   - TaskDetail: task detail panel
 ///   - Metadata / TaskList: three metadata fields + task list below
 fn draw_spec_editor(frame: &mut Frame, editor: &SpecEditorState, area: Rect) {
-    let title = format!(" PRD Editor: {} ", editor.workflow_name);
+    let title = format!(" Spec Editor: {} ", editor.workflow_name);
     let outer_block = Block::default().borders(Borders::ALL).title(title);
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
@@ -881,7 +881,7 @@ fn draw_spec_editor(frame: &mut Frame, editor: &SpecEditorState, area: Rect) {
 ///   Project field   — 3 rows (bordered)
 ///   Branch field    — 3 rows (bordered)
 ///   Description field — 3 rows (bordered)
-///   Stories list    — flexible (bordered, scrollable)
+///   Tasks list      — flexible (bordered, scrollable)
 ///   hint / status   — 1 row
 ///
 /// Active section border is highlighted yellow; focused metadata field shows `_` cursor.
@@ -893,7 +893,7 @@ fn draw_spec_metadata_and_tasks(frame: &mut Frame, editor: &SpecEditorState, are
             Constraint::Length(3), // Branch
             Constraint::Length(3), // Description
             Constraint::Length(5), // Validation Commands
-            Constraint::Min(0),    // Stories list
+            Constraint::Min(0),    // Tasks list
             Constraint::Length(1), // hint / status
         ])
         .split(area);
@@ -993,9 +993,9 @@ fn draw_spec_metadata_and_tasks(frame: &mut Frame, editor: &SpecEditorState, are
         frame.render_stateful_widget(list, layout[3], &mut list_state);
     }
 
-    // Stories list panel
+    // Tasks list panel
     let stories_focused = editor.mode == SpecEditorMode::TaskList;
-    let stories_title = format!("Stories ({})", editor.tasks.len());
+    let stories_title = format!("Tasks ({})", editor.tasks.len());
     let stories_block = Block::default()
         .borders(Borders::ALL)
         .title(stories_title)
@@ -1006,7 +1006,7 @@ fn draw_spec_metadata_and_tasks(frame: &mut Frame, editor: &SpecEditorState, are
         });
 
     if editor.tasks.is_empty() {
-        let msg = Paragraph::new("No stories. Press [a] to add one.").block(stories_block);
+        let msg = Paragraph::new("No tasks. Press [a] to add one.").block(stories_block);
         frame.render_widget(msg, layout[4]);
     } else {
         let items: Vec<ListItem> = editor
@@ -1033,7 +1033,7 @@ fn draw_spec_metadata_and_tasks(frame: &mut Frame, editor: &SpecEditorState, are
             .map(|s| s.id.as_str())
             .unwrap_or("?");
         Line::from(Span::styled(
-            format!("Delete story {task_id}? [y/N]"),
+            format!("Delete task {task_id}? [y/N]"),
             Style::default().fg(Color::Yellow),
         ))
     } else if let Some(err) = &editor.status {

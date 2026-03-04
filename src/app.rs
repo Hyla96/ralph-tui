@@ -680,16 +680,16 @@ fn strip_ansi(s: &str) -> String {
     result
 }
 
-/// Which pane of the PRDs tab has keyboard focus.
+/// Which pane of the Specs tab has keyboard focus.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpecsFocus {
     List,
     Content,
 }
 
-/// State for the PRDs read-only tab.
+/// State for the Specs read-only tab.
 pub struct SpecsTab {
-    /// Filenames (not full paths) of `.md` files found in `tasks/`, sorted alphabetically.
+    /// Filenames (not full paths) of `.md` files found in `.ralph/specs/`, sorted alphabetically.
     pub files: Vec<String>,
     /// Index of the currently selected file, or `None` when the list is empty.
     pub selected: Option<usize>,
@@ -707,11 +707,11 @@ pub struct App {
     pub workflows: Vec<String>,
     pub selected_workflow: Option<usize>,
     pub current_workflow: Option<Workflow>,
-    /// All open runner tabs (tab 0 is the PRDs tab, tab 1 is the Workflows tab).
+    /// All open runner tabs (tab 0 is the Specs tab, tab 1 is the Workflows tab).
     pub runner_tabs: Vec<RunnerTab>,
-    /// 0 = PRDs tab; 1 = Workflows tab; 2..=1+runner_tabs.len() = runner tab at index active_tab-2.
+    /// 0 = Specs tab; 1 = Workflows tab; 2..=1+runner_tabs.len() = runner tab at index active_tab-2.
     pub active_tab: usize,
-    /// State for the PRDs tab.
+    /// State for the Specs tab.
     pub specs_tab: SpecsTab,
     /// When true the next keypress is interpreted as a tab navigation chord.
     pub tab_nav_pending: bool,
@@ -731,7 +731,7 @@ pub struct App {
     /// Transient notification set after a watcher-triggered reload.
     /// Tuple is (message_text, time_set). Cleared after 3 seconds.
     pub notification: Option<(String, Instant)>,
-    /// When `Some`, the full-screen PRD metadata editor is active.
+    /// When `Some`, the full-screen spec editor is active.
     /// All key input is routed to the editor; normal TUI is hidden.
     pub spec_editor: Option<SpecEditorState>,
     /// VT100 parser for synthesis subprocess output.
@@ -864,7 +864,7 @@ impl App {
                     self.tab_nav_pending = false;
                     self.handle_tab_nav_key(key.code);
                 } else if self.active_tab == 0 {
-                    // PRDs tab keybindings.
+                    // Specs tab keybindings.
                     match key.code {
                         KeyCode::Char('t') => self.tab_nav_pending = true,
                         KeyCode::Tab => {
@@ -976,7 +976,7 @@ impl App {
                                 self.stop_runner();
                             }
                         }
-                        // Shift+S: trigger prd-synth synthesis for the selected workflow.
+                        // Shift+S: trigger spec-synth synthesis for the selected workflow.
                         KeyCode::Char('S') => self.start_synthesizing(),
                         KeyCode::Char('n') => self.open_new_workflow_dialog(),
                         KeyCode::Char('i') => self.open_import_spec_dialog(),
@@ -1173,10 +1173,10 @@ impl App {
 
     /// Handles the second key of a `t`-prefix tab navigation chord.
     ///
-    /// Digits `1`–`9` jump to the tab at index `digit − 1` (0 = PRDs, 1 = Workflows, 2+ = runners).
+    /// Digits `1`–`9` jump to the tab at index `digit − 1` (0 = Specs, 1 = Workflows, 2+ = runners).
     /// Any other key is silently ignored (flag was already cleared by the caller).
     fn handle_tab_nav_key(&mut self, code: KeyCode) {
-        let total_tabs = 2 + self.runner_tabs.len(); // PRDs tab + Workflows tab + runner tabs
+        let total_tabs = 2 + self.runner_tabs.len(); // Specs tab + Workflows tab + runner tabs
         match code {
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = (c as usize) - ('1' as usize); // digit '1' → 0, '9' → 8
@@ -1268,7 +1268,7 @@ impl App {
             return;
         }
 
-        // ImportPrd dialog.
+        // ImportSpec dialog.
         if matches!(self.dialog, Some(Dialog::ImportSpec { .. })) {
             let (workflow_name, input, confirm_overwrite) = match &self.dialog {
                 Some(Dialog::ImportSpec {
@@ -1370,7 +1370,7 @@ impl App {
         self.dialog = Some(Dialog::Help);
     }
 
-    /// Opens the full-screen PRD metadata editor for the currently selected workflow.
+    /// Opens the full-screen spec editor for the currently selected workflow.
     /// Pre-populates all fields from the on-disk workflows.json.
     fn open_spec_editor(&mut self) {
         let Some(idx) = self.selected_workflow else {
@@ -1474,7 +1474,7 @@ impl App {
         }
     }
 
-    /// Handles a key event while the PRD editor is open.
+    /// Handles a key event while the spec editor is open.
     ///
     /// Dispatch order:
     ///   1. Delete confirmation overlay (if active) — consumes all keys.
@@ -1999,7 +1999,7 @@ impl App {
         });
     }
 
-    /// Opens the ImportPrd dialog for the currently selected workflow.
+    /// Opens the ImportSpec dialog for the currently selected workflow.
     fn open_import_spec_dialog(&mut self) {
         let Some(idx) = self.selected_workflow else {
             return;
@@ -2015,7 +2015,7 @@ impl App {
         });
     }
 
-    /// Validates the path entered in the ImportPrd dialog and either copies the file,
+    /// Validates the path entered in the ImportSpec dialog and either copies the file,
     /// asks for overwrite confirmation, or shows an inline error.
     fn handle_import_spec_submit(&mut self, workflow_name: &str, input: &str) {
         // Resolve relative paths from the repo root.
@@ -2081,7 +2081,7 @@ impl App {
         match std::fs::copy(&path, &dest) {
             Ok(_) => {
                 self.dialog = None;
-                self.notification = Some(("PRD imported".to_string(), Instant::now()));
+                self.notification = Some(("Spec imported".to_string(), Instant::now()));
             }
             Err(e) => {
                 self.dialog = None;
@@ -2832,7 +2832,7 @@ impl App {
             tab.current_task_cost_usd = 0.0;
             tab.insert_mode = false;
             tab.saw_complete = false;
-            self.active_tab = reuse + 2; // active_tab is 2-indexed for runner tabs (0=PRDs, 1=Workflows)
+            self.active_tab = reuse + 2; // active_tab is 2-indexed for runner tabs (0=Specs, 1=Workflows)
         } else {
             let tab = RunnerTab {
                 workflow_name: name,
@@ -2855,7 +2855,7 @@ impl App {
                 saw_complete: false,
             };
             self.runner_tabs.push(tab);
-            self.active_tab = 1 + self.runner_tabs.len(); // runner tabs are 2-indexed in active_tab (0=PRDs, 1=Workflows)
+            self.active_tab = 1 + self.runner_tabs.len(); // runner tabs are 2-indexed in active_tab (0=Specs, 1=Workflows)
         }
 
         self.resize_txs.push(resize_tx);

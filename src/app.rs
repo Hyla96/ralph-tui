@@ -92,7 +92,7 @@ pub enum Dialog {
         workflow_name: String,
         input: String,
         error: Option<String>,
-        /// When true, prd-source.md already exists and the user is being asked to confirm overwrite.
+        /// When true, spec-source.md already exists and the user is being asked to confirm overwrite.
         confirm_overwrite: bool,
     },
     /// Shown when the user presses [q]; y/Y confirms quit, any other key cancels.
@@ -154,7 +154,7 @@ pub struct PrdEditorState {
     pub confirm_delete: Option<usize>,
     /// Transient error/status shown in the hint line; cleared on next keystroke.
     pub status: Option<String>,
-    /// Validation commands list (one per line); populated from prd.json.
+    /// Validation commands list (one per line); populated from workflows.json.
     pub validation_commands: Vec<String>,
     /// Index of the currently active validation command line (within validation_commands).
     pub validation_commands_cursor: usize,
@@ -389,7 +389,7 @@ async fn runner_task(
     let _ = tx.send(RunnerEvent::Exited(exit_code));
 }
 
-/// Spawns `claude --dangerously-skip-permissions /prd-synth` inside a PTY in the
+/// Spawns `claude --dangerously-skip-permissions /spec-synth` inside a PTY in the
 /// workflow directory and streams output back via `tx`.
 /// Listens on `kill_rx` for an early termination signal.
 async fn synth_task(
@@ -403,7 +403,7 @@ async fn synth_task(
 
     let _ = tx.send(RunnerEvent::Bytes(
         format!(
-            "[synth] spawning claude prd-synth in {}\r\n",
+            "[synth] spawning claude spec-synth in {}\r\n",
             workflow_dir.display()
         )
         .into_bytes(),
@@ -425,7 +425,7 @@ async fn synth_task(
     };
 
     let mut cmd = CommandBuilder::new("claude");
-    cmd.args(["--dangerously-skip-permissions", "/prd-synth"]);
+    cmd.args(["--dangerously-skip-permissions", "/spec-synth"]);
     cmd.cwd(&workflow_dir);
 
     let mut child = match pair.slave.spawn_command(cmd) {
@@ -1199,7 +1199,7 @@ impl App {
             return Ok(());
         };
 
-        let prd_path = self.store.workflow_dir(&name).join("prd.json");
+        let prd_path = self.store.workflow_dir(&name).join("workflows.json");
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
 
         // Suspend TUI: disable raw mode and leave alternate screen.
@@ -1371,7 +1371,7 @@ impl App {
     }
 
     /// Opens the full-screen PRD metadata editor for the currently selected workflow.
-    /// Pre-populates all fields from the on-disk prd.json.
+    /// Pre-populates all fields from the on-disk workflows.json.
     fn open_prd_editor(&mut self) {
         let Some(idx) = self.selected_workflow else {
             return;
@@ -1419,7 +1419,7 @@ impl App {
         });
     }
 
-    /// Writes the current editor state back to prd.json.
+    /// Writes the current editor state back to workflows.json.
     /// Saves project, branch, description, and the full stories list.
     /// On success closes the editor; on error shows the message in the status line.
     fn save_prd_editor(&mut self) {
@@ -1888,7 +1888,7 @@ impl App {
     }
 
     /// Saves the story detail form back into the in-memory story list, then persists
-    /// the full plan (metadata + all stories) to prd.json.  Returns to StoryList mode
+    /// the full plan (metadata + all stories) to workflows.json.  Returns to StoryList mode
     /// on success; shows an error in the hint line on failure.
     fn save_story_detail(&mut self) {
         // Build the Task from story detail fields (clone to release the borrow).
@@ -2041,8 +2041,8 @@ impl App {
             return;
         }
 
-        // If prd-source.md already exists, prompt for overwrite confirmation.
-        let dest = self.store.workflow_dir(workflow_name).join("prd-source.md");
+        // If spec-source.md already exists, prompt for overwrite confirmation.
+        let dest = self.store.spec_dir(workflow_name).join("spec-source.md");
         if dest.exists() {
             if let Some(Dialog::ImportPrd {
                 confirm_overwrite,
@@ -2060,7 +2060,7 @@ impl App {
         self.do_import_prd_copy(workflow_name, input);
     }
 
-    /// Copies the source markdown file to `<workflow_dir>/prd-source.md`.
+    /// Copies the source markdown file to `.ralph/specs/<name>/spec-source.md`.
     /// Closes the dialog and sets a notification on success, or sets a timed
     /// status message on failure.
     fn do_import_prd_copy(&mut self, workflow_name: &str, input: &str) {
@@ -2070,7 +2070,14 @@ impl App {
             self.store.root().join(input)
         };
 
-        let dest = self.store.workflow_dir(workflow_name).join("prd-source.md");
+        let spec_dir = self.store.spec_dir(workflow_name);
+        if let Err(e) = std::fs::create_dir_all(&spec_dir) {
+            self.dialog = None;
+            self.status_message = Some(format!("Import failed: {e}"));
+            self.status_message_expires = Some(Instant::now() + Duration::from_secs(3));
+            return;
+        }
+        let dest = spec_dir.join("spec-source.md");
         match std::fs::copy(&path, &dest) {
             Ok(_) => {
                 self.dialog = None;
@@ -2564,9 +2571,9 @@ impl App {
         self.synth_rx.is_some()
     }
 
-    /// Starts prd-synth synthesis for the currently selected workflow.
+    /// Starts spec-synth synthesis for the currently selected workflow.
     ///
-    /// Checks that prd-source.md exists in the workflow directory; shows a status
+    /// Checks that spec-source.md exists in the spec directory; shows a status
     /// error if not. Spawns `synth_task` via a PTY and wires up the event channel.
     fn start_synthesizing(&mut self) {
         let Some(idx) = self.selected_workflow else {
@@ -2584,10 +2591,10 @@ impl App {
         }
 
         let workflow_dir = self.store.workflow_dir(&name);
-        let prd_source = workflow_dir.join("prd-source.md");
-        if !prd_source.exists() {
+        let spec_source = self.store.spec_dir(&name).join("spec-source.md");
+        if !spec_source.exists() {
             self.status_message =
-                Some("No prd-source.md \u{2014} press [i] to import".to_string());
+                Some("No spec-source.md \u{2014} press [i] to import".to_string());
             self.status_message_expires = Some(Instant::now() + Duration::from_secs(4));
             return;
         }
@@ -2701,13 +2708,13 @@ impl App {
                 // Post-synthesis outcome handling.
                 match exited_code {
                     Some(Some(0)) => {
-                        // Exit code 0: attempt to load the synthesized prd.json.
+                        // Exit code 0: attempt to load the synthesized workflows.json.
                         let workflow_name = self.synth_workflow_name.clone();
                         if let Some(name) = workflow_name {
                             let dir = self.store.workflow_dir(&name);
                             match Workflow::load(&dir) {
                                 Ok(_) => {
-                                    // prd.json is valid — reload stories panel and show success.
+                                    // workflows.json is valid — reload tasks panel and show success.
                                     self.load_current_workflow();
                                     self.notification = Some((
                                         "Synthesis complete".to_string(),
@@ -2715,9 +2722,9 @@ impl App {
                                     ));
                                 }
                                 Err(_) => {
-                                    // prd.json missing or unparseable.
+                                    // workflows.json missing or unparseable.
                                     self.status_message = Some(
-                                        "prd.json invalid after synthesis \u{2014} check log"
+                                        "workflows.json invalid after synthesis \u{2014} check log"
                                             .to_string(),
                                     );
                                     self.status_message_expires = None; // persist until dismissed
@@ -2726,7 +2733,7 @@ impl App {
                         }
                     }
                     Some(Some(code)) => {
-                        // Non-zero exit: synthesis failed; do not touch prd.json.
+                        // Non-zero exit: synthesis failed; do not touch workflows.json.
                         self.status_message = Some(format!(
                             "Synthesis failed (exit {code}) \u{2014} check log"
                         ));

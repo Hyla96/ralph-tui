@@ -184,8 +184,8 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
             .map(|name| {
                 let has_src = app
                     .store
-                    .workflow_dir(name)
-                    .join("prd-source.md")
+                    .spec_dir(name)
+                    .join("spec-source.md")
                     .exists();
                 let label = if has_src {
                     format!("{name} [src]")

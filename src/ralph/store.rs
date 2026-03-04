@@ -30,7 +30,17 @@ impl Store {
         self.workflows_dir().join(name)
     }
 
-    /// Scans `.ralph/workflows/` and returns subdirectory names that contain a `prd.json`.
+    /// Returns `<repo_root>/.ralph/specs/` as a `PathBuf`.
+    pub fn specs_dir(&self) -> PathBuf {
+        self.root.join(".ralph").join("specs")
+    }
+
+    /// Returns `<repo_root>/.ralph/specs/<name>/` as a `PathBuf`.
+    pub fn spec_dir(&self, name: &str) -> PathBuf {
+        self.specs_dir().join(name)
+    }
+
+    /// Scans `.ralph/workflows/` and returns subdirectory names that contain a `workflows.json`.
     /// Returns an empty vec if the directory does not exist.
     pub fn list_workflows(&self) -> Vec<String> {
         let dir = self.workflows_dir();
@@ -43,14 +53,14 @@ impl Store {
         let mut workflows: Vec<String> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
-            .filter(|e| e.path().join("prd.json").exists())
+            .filter(|e| e.path().join("workflows.json").exists())
             .filter_map(|e| e.file_name().into_string().ok())
             .collect();
         workflows.sort();
         workflows
     }
 
-    /// Creates `.ralph/workflows/<name>/` and writes a starter `prd.json`.
+    /// Creates `.ralph/workflows/<name>/workflows.json` and `.ralph/specs/<name>/`.
     /// Returns `Err` if the workflow already exists or if name is invalid.
     pub fn create_workflow(&self, name: &str) -> Result<()> {
         let dir = self.workflow_dir(name);
@@ -60,6 +70,10 @@ impl Store {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("failed to create workflow directory: {}", dir.display()))?;
 
+        let spec_dir = self.spec_dir(name);
+        std::fs::create_dir_all(&spec_dir)
+            .with_context(|| format!("failed to create spec directory: {}", spec_dir.display()))?;
+
         let starter = serde_json::json!({
             "project": name,
             "branchName": "",
@@ -68,8 +82,8 @@ impl Store {
             "tasks": []
         });
         let json = serde_json::to_string_pretty(&starter)?;
-        std::fs::write(dir.join("prd.json"), json)
-            .with_context(|| "failed to write starter prd.json")?;
+        std::fs::write(dir.join("workflows.json"), json)
+            .with_context(|| "failed to write starter workflows.json")?;
         Ok(())
     }
 

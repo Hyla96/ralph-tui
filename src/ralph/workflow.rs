@@ -32,10 +32,10 @@ pub struct Workflow {
 }
 
 impl Workflow {
-    /// Reads `prd.json` from `dir` and returns `Ok(Workflow)`.
+    /// Reads `workflows.json` from `dir` and returns `Ok(Workflow)`.
     /// Returns `Err` if the file is missing or contains invalid JSON.
     pub fn load(dir: &Path) -> Result<Self> {
-        let path = dir.join("prd.json");
+        let path = dir.join("workflows.json");
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let prd: PrdJson = serde_json::from_str(&content)
@@ -43,9 +43,9 @@ impl Workflow {
         Ok(Workflow { prd })
     }
 
-    /// Writes `self.prd` back to `prd.json` in `dir`.
+    /// Writes `self.prd` back to `workflows.json` in `dir`.
     pub fn save(&self, dir: &Path) -> Result<()> {
-        let path = dir.join("prd.json");
+        let path = dir.join("workflows.json");
         let json = serde_json::to_string_pretty(&self.prd)?;
         std::fs::write(&path, json)
             .with_context(|| format!("failed to write {}", path.display()))?;

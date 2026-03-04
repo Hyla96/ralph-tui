@@ -15,7 +15,7 @@ pub struct Task {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrdJson {
+pub struct WorkflowJson {
     pub project: String,
     #[serde(rename = "branchName")]
     pub branch_name: String,
@@ -28,7 +28,7 @@ pub struct PrdJson {
 
 #[derive(Debug, Clone)]
 pub struct Workflow {
-    pub prd: PrdJson,
+    pub data: WorkflowJson,
 }
 
 impl Workflow {
@@ -38,15 +38,15 @@ impl Workflow {
         let path = dir.join("workflows.json");
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let prd: PrdJson = serde_json::from_str(&content)
+        let data: WorkflowJson = serde_json::from_str(&content)
             .with_context(|| format!("failed to parse {}", path.display()))?;
-        Ok(Workflow { prd })
+        Ok(Workflow { data })
     }
 
-    /// Writes `self.prd` back to `workflows.json` in `dir`.
+    /// Writes `self.data` back to `workflows.json` in `dir`.
     pub fn save(&self, dir: &Path) -> Result<()> {
         let path = dir.join("workflows.json");
-        let json = serde_json::to_string_pretty(&self.prd)?;
+        let json = serde_json::to_string_pretty(&self.data)?;
         std::fs::write(&path, json)
             .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
@@ -54,17 +54,17 @@ impl Workflow {
 
     /// Returns the count of tasks where `passes == true`.
     pub fn done_count(&self) -> usize {
-        self.prd.tasks.iter().filter(|t| t.passes).count()
+        self.data.tasks.iter().filter(|t| t.passes).count()
     }
 
     /// Returns the total number of tasks.
     pub fn total_count(&self) -> usize {
-        self.prd.tasks.len()
+        self.data.tasks.len()
     }
 
     /// Returns the first task where `passes == false`, sorted by `priority` ascending.
     pub fn next_task(&self) -> Option<&Task> {
-        self.prd
+        self.data
             .tasks
             .iter()
             .filter(|t| !t.passes)
@@ -73,6 +73,6 @@ impl Workflow {
 
     /// Returns `true` if all tasks have `passes == true`.
     pub fn is_complete(&self) -> bool {
-        self.prd.tasks.iter().all(|t| t.passes)
+        self.data.tasks.iter().all(|t| t.passes)
     }
 }

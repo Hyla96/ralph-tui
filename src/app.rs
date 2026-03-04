@@ -88,7 +88,7 @@ pub enum Dialog {
     },
     Help,
     RunnerHelp,
-    ImportPrd {
+    ImportSpec {
         workflow_name: String,
         input: String,
         error: Option<String>,
@@ -103,7 +103,7 @@ pub enum Dialog {
 
 /// Which field of the metadata form currently has focus.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PrdEditorField {
+pub enum SpecEditorField {
     Project,
     Branch,
     Description,
@@ -122,7 +122,7 @@ pub enum StoryDetailField {
 
 /// Which top-level section of the PRD editor is active.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PrdEditorMode {
+pub enum SpecEditorMode {
     /// Focus is on the metadata fields (Project, Branch, Description).
     Metadata,
     /// Focus is on the story list panel.
@@ -132,16 +132,16 @@ pub enum PrdEditorMode {
 }
 
 /// In-memory state for the full-screen plan-metadata editor.
-pub struct PrdEditorState {
+pub struct SpecEditorState {
     /// Name of the workflow being edited (used to resolve the directory).
     pub workflow_name: String,
     pub project: String,
     pub branch: String,
     pub description: String,
     /// Which metadata field has focus when mode == Metadata.
-    pub focused_field: PrdEditorField,
+    pub focused_field: SpecEditorField,
     /// Which top-level section of the editor is active.
-    pub mode: PrdEditorMode,
+    pub mode: SpecEditorMode,
     /// In-memory copy of all tasks; mutated by story list add/delete.
     pub stories: Vec<Task>,
     /// Index of the currently selected story in the story list.
@@ -682,13 +682,13 @@ fn strip_ansi(s: &str) -> String {
 
 /// Which pane of the PRDs tab has keyboard focus.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PrdsFocus {
+pub enum SpecsFocus {
     List,
     Content,
 }
 
 /// State for the PRDs read-only tab.
-pub struct PrdsTab {
+pub struct SpecsTab {
     /// Filenames (not full paths) of `.md` files found in `tasks/`, sorted alphabetically.
     pub files: Vec<String>,
     /// Index of the currently selected file, or `None` when the list is empty.
@@ -698,7 +698,7 @@ pub struct PrdsTab {
     /// Scroll offset (lines from top) for the content pane.
     pub scroll: u16,
     /// Which pane currently has keyboard focus.
-    pub focus: PrdsFocus,
+    pub focus: SpecsFocus,
 }
 
 pub struct App {
@@ -712,7 +712,7 @@ pub struct App {
     /// 0 = PRDs tab; 1 = Workflows tab; 2..=1+runner_tabs.len() = runner tab at index active_tab-2.
     pub active_tab: usize,
     /// State for the PRDs tab.
-    pub prds_tab: PrdsTab,
+    pub specs_tab: SpecsTab,
     /// When true the next keypress is interpreted as a tab navigation chord.
     pub tab_nav_pending: bool,
     pub dialog: Option<Dialog>,
@@ -733,7 +733,7 @@ pub struct App {
     pub notification: Option<(String, Instant)>,
     /// When `Some`, the full-screen PRD metadata editor is active.
     /// All key input is routed to the editor; normal TUI is hidden.
-    pub prd_editor: Option<PrdEditorState>,
+    pub spec_editor: Option<SpecEditorState>,
     /// VT100 parser for synthesis subprocess output.
     /// `None` until the first synthesis has been started.
     pub synth_parser: Option<VtParser>,
@@ -769,12 +769,12 @@ impl App {
             current_workflow: None,
             runner_tabs: Vec::new(),
             active_tab: 0,
-            prds_tab: PrdsTab {
+            specs_tab: SpecsTab {
                 files: Vec::new(),
                 selected: None,
                 content: String::new(),
                 scroll: 0,
-                focus: PrdsFocus::List,
+                focus: SpecsFocus::List,
             },
             tab_nav_pending: false,
             dialog: None,
@@ -785,14 +785,14 @@ impl App {
             watcher_rx: watcher_rx_opt,
             _watcher: watcher_opt,
             notification: None,
-            prd_editor: None,
+            spec_editor: None,
             synth_parser: None,
             synth_rx: None,
             synth_kill_tx: None,
             synth_workflow_name: None,
         };
         app.load_current_workflow();
-        app.load_prds_files();
+        app.load_specs_files();
         app
     }
 
@@ -855,8 +855,8 @@ impl App {
             }
             Event::Key(key) => {
                 #[allow(clippy::collapsible_else_if)]
-                if self.prd_editor.is_some() {
-                    self.handle_prd_editor_key(key);
+                if self.spec_editor.is_some() {
+                    self.handle_spec_editor_key(key);
                 } else if self.dialog.is_some() {
                     self.handle_dialog_key(key.code);
                 } else if self.tab_nav_pending {
@@ -883,36 +883,36 @@ impl App {
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             self.running = false;
                         }
-                        _ => match self.prds_tab.focus {
-                            PrdsFocus::List => match key.code {
+                        _ => match self.specs_tab.focus {
+                            SpecsFocus::List => match key.code {
                                 KeyCode::Down | KeyCode::Char('j') => {
-                                    if !self.prds_tab.files.is_empty() {
-                                        let next = match self.prds_tab.selected {
+                                    if !self.specs_tab.files.is_empty() {
+                                        let next = match self.specs_tab.selected {
                                             None => 0,
-                                            Some(i) => (i + 1) % self.prds_tab.files.len(),
+                                            Some(i) => (i + 1) % self.specs_tab.files.len(),
                                         };
-                                        self.select_prds_file(next);
+                                        self.select_specs_file(next);
                                     }
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
-                                    if !self.prds_tab.files.is_empty() {
-                                        let prev = match self.prds_tab.selected {
+                                    if !self.specs_tab.files.is_empty() {
+                                        let prev = match self.specs_tab.selected {
                                             None => 0,
-                                            Some(0) => self.prds_tab.files.len() - 1,
+                                            Some(0) => self.specs_tab.files.len() - 1,
                                             Some(i) => i - 1,
                                         };
-                                        self.select_prds_file(prev);
+                                        self.select_specs_file(prev);
                                     }
                                 }
                                 KeyCode::Enter => {
-                                    self.prds_tab.focus = PrdsFocus::Content;
+                                    self.specs_tab.focus = SpecsFocus::Content;
                                 }
                                 _ => {}
                             },
-                            PrdsFocus::Content => match key.code {
+                            SpecsFocus::Content => match key.code {
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     let line_count =
-                                        self.prds_tab.content.lines().count();
+                                        self.specs_tab.content.lines().count();
                                     let (_, rows) = self.initial_size;
                                     // Layout: 1 tab bar + flexible content + 1 status bar
                                     // + 2 content border = 4 fixed lines consumed.
@@ -920,15 +920,15 @@ impl App {
                                         (rows as usize).saturating_sub(4);
                                     let max_scroll =
                                         line_count.saturating_sub(visible_lines) as u16;
-                                    self.prds_tab.scroll =
-                                        (self.prds_tab.scroll + 1).min(max_scroll);
+                                    self.specs_tab.scroll =
+                                        (self.specs_tab.scroll + 1).min(max_scroll);
                                 }
                                 KeyCode::Up | KeyCode::Char('k') => {
-                                    self.prds_tab.scroll =
-                                        self.prds_tab.scroll.saturating_sub(1);
+                                    self.specs_tab.scroll =
+                                        self.specs_tab.scroll.saturating_sub(1);
                                 }
                                 KeyCode::Esc => {
-                                    self.prds_tab.focus = PrdsFocus::List;
+                                    self.specs_tab.focus = SpecsFocus::List;
                                 }
                                 _ => {}
                             },
@@ -942,7 +942,7 @@ impl App {
                             let total_tabs = 2 + self.runner_tabs.len();
                             self.active_tab = (self.active_tab + 1) % total_tabs;
                             if self.active_tab == 0 {
-                                self.load_prds_files();
+                                self.load_specs_files();
                             }
                         }
                         KeyCode::BackTab => {
@@ -953,7 +953,7 @@ impl App {
                                 self.active_tab - 1
                             };
                             if self.active_tab == 0 {
-                                self.load_prds_files();
+                                self.load_specs_files();
                             }
                         }
                         KeyCode::Char('q') => self.dialog = Some(Dialog::QuitConfirm),
@@ -979,9 +979,9 @@ impl App {
                         // Shift+S: trigger prd-synth synthesis for the selected workflow.
                         KeyCode::Char('S') => self.start_synthesizing(),
                         KeyCode::Char('n') => self.open_new_workflow_dialog(),
-                        KeyCode::Char('i') => self.open_import_prd_dialog(),
+                        KeyCode::Char('i') => self.open_import_spec_dialog(),
                         KeyCode::Char('e') => self.edit_current_plan(terminal)?,
-                        KeyCode::Char('E') => self.open_prd_editor(),
+                        KeyCode::Char('E') => self.open_spec_editor(),
                         KeyCode::Char('d') => self.open_delete_workflow_dialog(),
                         KeyCode::Char('?') => self.open_help_dialog(),
                         _ => {}
@@ -1147,7 +1147,7 @@ impl App {
                                 let total_tabs = 2 + self.runner_tabs.len();
                                 self.active_tab = (self.active_tab + 1) % total_tabs;
                                 if self.active_tab == 0 {
-                                    self.load_prds_files();
+                                    self.load_specs_files();
                                 }
                             }
                             KeyCode::BackTab => {
@@ -1158,7 +1158,7 @@ impl App {
                                     self.active_tab - 1
                                 };
                                 // Runner BackTab can never reach 0 (runner index >= 2),
-                                // so no load_prds_files call needed here.
+                                // so no load_specs_files call needed here.
                             }
                             // Normal mode: unrecognized keys are ignored (use Insert mode to type freely).
                             _ => {}
@@ -1183,7 +1183,7 @@ impl App {
                 if idx < total_tabs {
                     self.active_tab = idx;
                     if idx == 0 {
-                        self.load_prds_files();
+                        self.load_specs_files();
                     }
                 }
             }
@@ -1269,9 +1269,9 @@ impl App {
         }
 
         // ImportPrd dialog.
-        if matches!(self.dialog, Some(Dialog::ImportPrd { .. })) {
+        if matches!(self.dialog, Some(Dialog::ImportSpec { .. })) {
             let (workflow_name, input, confirm_overwrite) = match &self.dialog {
-                Some(Dialog::ImportPrd {
+                Some(Dialog::ImportSpec {
                     workflow_name,
                     input,
                     confirm_overwrite,
@@ -1284,7 +1284,7 @@ impl App {
                 // Overwrite confirmation: y proceeds, anything else cancels.
                 self.dialog = None;
                 if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                    self.do_import_prd_copy(&workflow_name, &input);
+                    self.do_import_spec_copy(&workflow_name, &input);
                 }
                 return;
             }
@@ -1295,19 +1295,19 @@ impl App {
                     self.dialog = None;
                 }
                 KeyCode::Backspace => {
-                    if let Some(Dialog::ImportPrd { input, error, .. }) = &mut self.dialog {
+                    if let Some(Dialog::ImportSpec { input, error, .. }) = &mut self.dialog {
                         input.pop();
                         *error = None;
                     }
                 }
                 KeyCode::Char(c) => {
-                    if let Some(Dialog::ImportPrd { input, error, .. }) = &mut self.dialog {
+                    if let Some(Dialog::ImportSpec { input, error, .. }) = &mut self.dialog {
                         input.push(c);
                         *error = None;
                     }
                 }
                 KeyCode::Enter => {
-                    self.handle_import_prd_submit(&workflow_name, &input);
+                    self.handle_import_spec_submit(&workflow_name, &input);
                 }
                 _ => {}
             }
@@ -1372,7 +1372,7 @@ impl App {
 
     /// Opens the full-screen PRD metadata editor for the currently selected workflow.
     /// Pre-populates all fields from the on-disk workflows.json.
-    fn open_prd_editor(&mut self) {
+    fn open_spec_editor(&mut self) {
         let Some(idx) = self.selected_workflow else {
             return;
         };
@@ -1389,24 +1389,24 @@ impl App {
             }
         };
 
-        let selected_story = if workflow.prd.tasks.is_empty() {
+        let selected_story = if workflow.data.tasks.is_empty() {
             None
         } else {
             Some(0)
         };
-        self.prd_editor = Some(PrdEditorState {
+        self.spec_editor = Some(SpecEditorState {
             workflow_name: name,
-            project: workflow.prd.project.clone(),
-            branch: workflow.prd.branch_name.clone(),
-            description: workflow.prd.description.clone(),
-            focused_field: PrdEditorField::Project,
-            mode: PrdEditorMode::Metadata,
-            stories: workflow.prd.tasks.clone(),
+            project: workflow.data.project.clone(),
+            branch: workflow.data.branch_name.clone(),
+            description: workflow.data.description.clone(),
+            focused_field: SpecEditorField::Project,
+            mode: SpecEditorMode::Metadata,
+            stories: workflow.data.tasks.clone(),
             selected_story,
             is_new_story: false,
             confirm_delete: None,
             status: None,
-            validation_commands: workflow.prd.validation_commands.clone(),
+            validation_commands: workflow.data.validation_commands.clone(),
             validation_commands_cursor: 0,
             // Story detail fields — populated when entering StoryDetail mode.
             story_id: String::new(),
@@ -1422,9 +1422,9 @@ impl App {
     /// Writes the current editor state back to workflows.json.
     /// Saves project, branch, description, and the full stories list.
     /// On success closes the editor; on error shows the message in the status line.
-    fn save_prd_editor(&mut self) {
+    fn save_spec_editor(&mut self) {
         // Clone the values we need before releasing the immutable borrow.
-        let (name, project, branch, description, stories, validation_commands) = match &self.prd_editor {
+        let (name, project, branch, description, stories, validation_commands) = match &self.spec_editor {
             Some(e) => (
                 e.workflow_name.clone(),
                 e.project.clone(),
@@ -1439,35 +1439,35 @@ impl App {
         let dir = self.store.workflow_dir(&name);
         match Workflow::load(&dir) {
             Ok(mut workflow) => {
-                workflow.prd.project = project;
-                workflow.prd.branch_name = branch;
-                workflow.prd.description = description;
-                workflow.prd.tasks = stories;
-                workflow.prd.validation_commands = validation_commands;
+                workflow.data.project = project;
+                workflow.data.branch_name = branch;
+                workflow.data.description = description;
+                workflow.data.tasks = stories;
+                workflow.data.validation_commands = validation_commands;
                 match workflow.save(&dir) {
                     Ok(()) => {
                         // Verify the saved file is valid JSON and can be deserialized.
                         match Workflow::load(&dir) {
                             Ok(_) => {
-                                self.prd_editor = None;
+                                self.spec_editor = None;
                                 self.load_current_workflow();
                             }
                             Err(e) => {
-                                if let Some(editor) = &mut self.prd_editor {
+                                if let Some(editor) = &mut self.spec_editor {
                                     editor.status = Some(format!("Save verification failed: {e}"));
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        if let Some(editor) = &mut self.prd_editor {
+                        if let Some(editor) = &mut self.spec_editor {
                             editor.status = Some(format!("Save failed: {e}"));
                         }
                     }
                 }
             }
             Err(e) => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     editor.status = Some(format!("Load failed: {e}"));
                 }
             }
@@ -1480,9 +1480,9 @@ impl App {
     ///   1. Delete confirmation overlay (if active) — consumes all keys.
     ///   2. Global bindings: Esc (close / go back), Ctrl+S (save).
     ///   3. Mode-specific handlers: Metadata, StoryList, StoryDetail.
-    fn handle_prd_editor_key(&mut self, key: KeyEvent) {
+    fn handle_spec_editor_key(&mut self, key: KeyEvent) {
         // Extract mode and confirm_delete without holding a borrow.
-        let (mode, confirm_delete) = match &self.prd_editor {
+        let (mode, confirm_delete) = match &self.spec_editor {
             Some(e) => (e.mode.clone(), e.confirm_delete),
             None => return,
         };
@@ -1491,7 +1491,7 @@ impl App {
         if let Some(del_idx) = confirm_delete {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(editor) = &mut self.prd_editor {
+                    if let Some(editor) = &mut self.spec_editor {
                         editor.stories.remove(del_idx);
                         editor.selected_story = if editor.stories.is_empty() {
                             None
@@ -1503,7 +1503,7 @@ impl App {
                     }
                 }
                 _ => {
-                    if let Some(editor) = &mut self.prd_editor {
+                    if let Some(editor) = &mut self.spec_editor {
                         editor.confirm_delete = None;
                     }
                 }
@@ -1516,23 +1516,23 @@ impl App {
             KeyCode::Esc => {
                 match mode {
                     // US-003: Esc from story detail returns to story list without saving.
-                    PrdEditorMode::StoryDetail => {
-                        if let Some(editor) = &mut self.prd_editor {
-                            editor.mode = PrdEditorMode::StoryList;
+                    SpecEditorMode::StoryDetail => {
+                        if let Some(editor) = &mut self.spec_editor {
+                            editor.mode = SpecEditorMode::StoryList;
                         }
                     }
                     // Esc from metadata or story list closes the editor.
-                    PrdEditorMode::Metadata | PrdEditorMode::StoryList => {
-                        self.prd_editor = None;
+                    SpecEditorMode::Metadata | SpecEditorMode::StoryList => {
+                        self.spec_editor = None;
                     }
                 }
                 return;
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if mode == PrdEditorMode::StoryDetail {
-                    self.save_story_detail();
+                if mode == SpecEditorMode::StoryDetail {
+                    self.save_task_detail();
                 } else {
-                    self.save_prd_editor();
+                    self.save_spec_editor();
                 }
                 return;
             }
@@ -1541,18 +1541,18 @@ impl App {
 
         // Mode-specific key handling.
         match mode {
-            PrdEditorMode::Metadata => self.handle_prd_editor_metadata_key(key),
-            PrdEditorMode::StoryList => self.handle_prd_story_list_key(key),
-            PrdEditorMode::StoryDetail => self.handle_prd_story_detail_key(key),
+            SpecEditorMode::Metadata => self.handle_spec_editor_metadata_key(key),
+            SpecEditorMode::StoryList => self.handle_spec_task_list_key(key),
+            SpecEditorMode::StoryDetail => self.handle_spec_task_detail_key(key),
         }
     }
 
     /// Handles key events when the metadata section (Project / Branch / Description) is active.
-    fn handle_prd_editor_metadata_key(&mut self, key: KeyEvent) {
+    fn handle_spec_editor_metadata_key(&mut self, key: KeyEvent) {
         // Handle 'x' delete in ValidationCommands first (before general Char branch)
         if let KeyCode::Char('x') = key.code
-            && let Some(editor) = &mut self.prd_editor
-            && editor.focused_field == PrdEditorField::ValidationCommands
+            && let Some(editor) = &mut self.spec_editor
+            && editor.focused_field == SpecEditorField::ValidationCommands
             && editor.validation_commands_cursor < editor.validation_commands.len()
         {
             editor.validation_commands.remove(editor.validation_commands_cursor);
@@ -1568,50 +1568,50 @@ impl App {
 
         match key.code {
             KeyCode::Tab => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     match editor.focused_field {
-                        PrdEditorField::Project => editor.focused_field = PrdEditorField::Branch,
-                        PrdEditorField::Branch => {
-                            editor.focused_field = PrdEditorField::Description;
+                        SpecEditorField::Project => editor.focused_field = SpecEditorField::Branch,
+                        SpecEditorField::Branch => {
+                            editor.focused_field = SpecEditorField::Description;
                         }
-                        PrdEditorField::Description => {
-                            editor.focused_field = PrdEditorField::ValidationCommands;
+                        SpecEditorField::Description => {
+                            editor.focused_field = SpecEditorField::ValidationCommands;
                         }
-                        PrdEditorField::ValidationCommands => {
+                        SpecEditorField::ValidationCommands => {
                             // Advance past the last metadata field into the story list.
-                            editor.mode = PrdEditorMode::StoryList;
+                            editor.mode = SpecEditorMode::StoryList;
                         }
                     }
                 }
             }
             KeyCode::BackTab => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     match editor.focused_field {
-                        PrdEditorField::Project => {
+                        SpecEditorField::Project => {
                             // Wrap backwards into the story list.
-                            editor.mode = PrdEditorMode::StoryList;
+                            editor.mode = SpecEditorMode::StoryList;
                         }
-                        PrdEditorField::Branch => editor.focused_field = PrdEditorField::Project,
-                        PrdEditorField::Description => {
-                            editor.focused_field = PrdEditorField::Branch;
+                        SpecEditorField::Branch => editor.focused_field = SpecEditorField::Project,
+                        SpecEditorField::Description => {
+                            editor.focused_field = SpecEditorField::Branch;
                         }
-                        PrdEditorField::ValidationCommands => {
-                            editor.focused_field = PrdEditorField::Description;
+                        SpecEditorField::ValidationCommands => {
+                            editor.focused_field = SpecEditorField::Description;
                         }
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(editor) = &mut self.prd_editor
-                    && editor.focused_field == PrdEditorField::ValidationCommands
+                if let Some(editor) = &mut self.spec_editor
+                    && editor.focused_field == SpecEditorField::ValidationCommands
                     && editor.validation_commands_cursor > 0
                 {
                     editor.validation_commands_cursor -= 1;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(editor) = &mut self.prd_editor
-                    && editor.focused_field == PrdEditorField::ValidationCommands
+                if let Some(editor) = &mut self.spec_editor
+                    && editor.focused_field == SpecEditorField::ValidationCommands
                 {
                     let len = editor.validation_commands.len();
                     if editor.validation_commands_cursor + 1 < len {
@@ -1620,8 +1620,8 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                if let Some(editor) = &mut self.prd_editor
-                    && editor.focused_field == PrdEditorField::ValidationCommands
+                if let Some(editor) = &mut self.spec_editor
+                    && editor.focused_field == SpecEditorField::ValidationCommands
                 {
                     if editor.validation_commands.is_empty() {
                         editor.validation_commands.push(String::new());
@@ -1633,18 +1633,18 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     match editor.focused_field {
-                        PrdEditorField::Project => {
+                        SpecEditorField::Project => {
                             editor.project.pop();
                         }
-                        PrdEditorField::Branch => {
+                        SpecEditorField::Branch => {
                             editor.branch.pop();
                         }
-                        PrdEditorField::Description => {
+                        SpecEditorField::Description => {
                             editor.description.pop();
                         }
-                        PrdEditorField::ValidationCommands => {
+                        SpecEditorField::ValidationCommands => {
                             if editor.validation_commands_cursor < editor.validation_commands.len() {
                                 editor.validation_commands[editor.validation_commands_cursor].pop();
                             }
@@ -1654,12 +1654,12 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     match editor.focused_field {
-                        PrdEditorField::Project => editor.project.push(c),
-                        PrdEditorField::Branch => editor.branch.push(c),
-                        PrdEditorField::Description => editor.description.push(c),
-                        PrdEditorField::ValidationCommands => {
+                        SpecEditorField::Project => editor.project.push(c),
+                        SpecEditorField::Branch => editor.branch.push(c),
+                        SpecEditorField::Description => editor.description.push(c),
+                        SpecEditorField::ValidationCommands => {
                             if editor.validation_commands_cursor < editor.validation_commands.len() {
                                 editor.validation_commands[editor.validation_commands_cursor].push(c);
                             }
@@ -1673,10 +1673,10 @@ impl App {
     }
 
     /// Handles key events when the story list panel is active.
-    fn handle_prd_story_list_key(&mut self, key: KeyEvent) {
+    fn handle_spec_task_list_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(editor) = &mut self.prd_editor
+                if let Some(editor) = &mut self.spec_editor
                     && let Some(sel) = editor.selected_story
                     && sel > 0
                 {
@@ -1684,7 +1684,7 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     let len = editor.stories.len();
                     match editor.selected_story {
                         Some(sel) if sel + 1 < len => {
@@ -1699,7 +1699,7 @@ impl App {
             }
             KeyCode::Enter => {
                 // Populate story detail fields from the selected story and enter StoryDetail mode.
-                if let Some(editor) = &mut self.prd_editor
+                if let Some(editor) = &mut self.spec_editor
                     && let Some(sel) = editor.selected_story
                     && let Some(story) = editor.stories.get(sel).cloned()
                 {
@@ -1715,13 +1715,13 @@ impl App {
                     editor.story_criteria_cursor = 0;
                     editor.story_focused_field = StoryDetailField::Id;
                     editor.is_new_story = false;
-                    editor.mode = PrdEditorMode::StoryDetail;
+                    editor.mode = SpecEditorMode::StoryDetail;
                     editor.status = None;
                 }
             }
             KeyCode::Char('a') => {
                 // Open an empty story detail form for a new story.
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     let next_num = editor.stories.len() + 1;
                     editor.story_id = format!("US-{next_num:03}");
                     editor.story_title = String::new();
@@ -1731,13 +1731,13 @@ impl App {
                     editor.story_criteria_cursor = 0;
                     editor.story_focused_field = StoryDetailField::Id;
                     editor.is_new_story = true;
-                    editor.mode = PrdEditorMode::StoryDetail;
+                    editor.mode = SpecEditorMode::StoryDetail;
                     editor.status = None;
                 }
             }
             KeyCode::Char('x') => {
                 // Show delete confirmation for the currently selected story.
-                if let Some(editor) = &mut self.prd_editor
+                if let Some(editor) = &mut self.spec_editor
                     && editor.selected_story.is_some()
                 {
                     editor.confirm_delete = editor.selected_story;
@@ -1745,16 +1745,16 @@ impl App {
             }
             KeyCode::Tab => {
                 // Move focus back to the metadata section (wrap to Project).
-                if let Some(editor) = &mut self.prd_editor {
-                    editor.mode = PrdEditorMode::Metadata;
-                    editor.focused_field = PrdEditorField::Project;
+                if let Some(editor) = &mut self.spec_editor {
+                    editor.mode = SpecEditorMode::Metadata;
+                    editor.focused_field = SpecEditorField::Project;
                 }
             }
             KeyCode::BackTab => {
                 // Move focus back to the metadata section (Description).
-                if let Some(editor) = &mut self.prd_editor {
-                    editor.mode = PrdEditorMode::Metadata;
-                    editor.focused_field = PrdEditorField::Description;
+                if let Some(editor) = &mut self.spec_editor {
+                    editor.mode = SpecEditorMode::Metadata;
+                    editor.focused_field = SpecEditorField::Description;
                 }
             }
             _ => {}
@@ -1766,16 +1766,16 @@ impl App {
     /// Field order (Tab): Id → Title → Description → Priority → Criteria → Id (wrap).
     /// BackTab reverses the order. Within the Criteria list, Up/Down move between lines,
     /// Enter inserts a new line below the cursor, and x deletes the focused line.
-    fn handle_prd_story_detail_key(&mut self, key: KeyEvent) {
+    fn handle_spec_task_detail_key(&mut self, key: KeyEvent) {
         // Clone focused field to avoid holding the borrow during the match.
-        let focused = match &self.prd_editor {
+        let focused = match &self.spec_editor {
             Some(e) => e.story_focused_field.clone(),
             None => return,
         };
 
         match key.code {
             KeyCode::Tab => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     editor.story_focused_field = match editor.story_focused_field {
                         StoryDetailField::Id => StoryDetailField::Title,
                         StoryDetailField::Title => StoryDetailField::Description,
@@ -1786,7 +1786,7 @@ impl App {
                 }
             }
             KeyCode::BackTab => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     editor.story_focused_field = match editor.story_focused_field {
                         StoryDetailField::Id => StoryDetailField::Criteria,
                         StoryDetailField::Title => StoryDetailField::Id,
@@ -1797,14 +1797,14 @@ impl App {
                 }
             }
             KeyCode::Up if focused == StoryDetailField::Criteria => {
-                if let Some(editor) = &mut self.prd_editor
+                if let Some(editor) = &mut self.spec_editor
                     && editor.story_criteria_cursor > 0
                 {
                     editor.story_criteria_cursor -= 1;
                 }
             }
             KeyCode::Down if focused == StoryDetailField::Criteria => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     let max = editor.story_criteria.len().saturating_sub(1);
                     if editor.story_criteria_cursor < max {
                         editor.story_criteria_cursor += 1;
@@ -1812,7 +1812,7 @@ impl App {
                 }
             }
             KeyCode::Enter if focused == StoryDetailField::Criteria => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     if editor.story_criteria.is_empty() {
                         editor.story_criteria.push(String::new());
                         editor.story_criteria_cursor = 0;
@@ -1824,7 +1824,7 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     match editor.story_focused_field {
                         StoryDetailField::Id => {
                             editor.story_id.pop();
@@ -1849,7 +1849,7 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     // x in the Criteria field deletes the focused criterion line.
                     if c == 'x'
                         && editor.story_focused_field == StoryDetailField::Criteria
@@ -1890,10 +1890,10 @@ impl App {
     /// Saves the story detail form back into the in-memory story list, then persists
     /// the full plan (metadata + all stories) to workflows.json.  Returns to StoryList mode
     /// on success; shows an error in the hint line on failure.
-    fn save_story_detail(&mut self) {
+    fn save_task_detail(&mut self) {
         // Build the Task from story detail fields (clone to release the borrow).
         let (workflow_name, task, project, branch, description, is_new, selected_idx) = {
-            let editor = match &self.prd_editor {
+            let editor = match &self.spec_editor {
                 Some(e) => e,
                 None => return,
             };
@@ -1936,7 +1936,7 @@ impl App {
         };
 
         // Update the in-memory story list and switch back to StoryList mode.
-        if let Some(editor) = &mut self.prd_editor {
+        if let Some(editor) = &mut self.spec_editor {
             if is_new {
                 editor.stories.push(task.clone());
                 let new_idx = editor.stories.len() - 1;
@@ -1946,12 +1946,12 @@ impl App {
             {
                 *existing = task.clone();
             }
-            editor.mode = PrdEditorMode::StoryList;
+            editor.mode = SpecEditorMode::StoryList;
             editor.status = None;
         }
 
         // Persist updated metadata + stories to disk.
-        let updated_stories = match &self.prd_editor {
+        let updated_stories = match &self.spec_editor {
             Some(e) => e.stories.clone(),
             None => return,
         };
@@ -1959,10 +1959,10 @@ impl App {
         let dir = self.store.workflow_dir(&workflow_name);
         match Workflow::load(&dir) {
             Ok(mut workflow) => {
-                workflow.prd.project = project;
-                workflow.prd.branch_name = branch;
-                workflow.prd.description = description;
-                workflow.prd.tasks = updated_stories;
+                workflow.data.project = project;
+                workflow.data.branch_name = branch;
+                workflow.data.description = description;
+                workflow.data.tasks = updated_stories;
                 match workflow.save(&dir) {
                     Ok(()) => {
                         // Verify the saved file is valid JSON and can be deserialized.
@@ -1971,21 +1971,21 @@ impl App {
                                 self.load_current_workflow();
                             }
                             Err(e) => {
-                                if let Some(editor) = &mut self.prd_editor {
+                                if let Some(editor) = &mut self.spec_editor {
                                     editor.status = Some(format!("Save verification failed: {e}"));
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        if let Some(editor) = &mut self.prd_editor {
+                        if let Some(editor) = &mut self.spec_editor {
                             editor.status = Some(format!("Save failed: {e}"));
                         }
                     }
                 }
             }
             Err(e) => {
-                if let Some(editor) = &mut self.prd_editor {
+                if let Some(editor) = &mut self.spec_editor {
                     editor.status = Some(format!("Load failed: {e}"));
                 }
             }
@@ -2000,14 +2000,14 @@ impl App {
     }
 
     /// Opens the ImportPrd dialog for the currently selected workflow.
-    fn open_import_prd_dialog(&mut self) {
+    fn open_import_spec_dialog(&mut self) {
         let Some(idx) = self.selected_workflow else {
             return;
         };
         let Some(name) = self.workflows.get(idx).cloned() else {
             return;
         };
-        self.dialog = Some(Dialog::ImportPrd {
+        self.dialog = Some(Dialog::ImportSpec {
             workflow_name: name,
             input: String::new(),
             error: None,
@@ -2017,7 +2017,7 @@ impl App {
 
     /// Validates the path entered in the ImportPrd dialog and either copies the file,
     /// asks for overwrite confirmation, or shows an inline error.
-    fn handle_import_prd_submit(&mut self, workflow_name: &str, input: &str) {
+    fn handle_import_spec_submit(&mut self, workflow_name: &str, input: &str) {
         // Resolve relative paths from the repo root.
         let path = if std::path::Path::new(input).is_absolute() {
             std::path::PathBuf::from(input)
@@ -2027,7 +2027,7 @@ impl App {
 
         // Validate that the path exists.
         if !path.exists() {
-            if let Some(Dialog::ImportPrd { error, .. }) = &mut self.dialog {
+            if let Some(Dialog::ImportSpec { error, .. }) = &mut self.dialog {
                 *error = Some("File not found".to_string());
             }
             return;
@@ -2035,7 +2035,7 @@ impl App {
 
         // Validate .md extension.
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            if let Some(Dialog::ImportPrd { error, .. }) = &mut self.dialog {
+            if let Some(Dialog::ImportSpec { error, .. }) = &mut self.dialog {
                 *error = Some("Not a .md file".to_string());
             }
             return;
@@ -2044,7 +2044,7 @@ impl App {
         // If spec-source.md already exists, prompt for overwrite confirmation.
         let dest = self.store.spec_dir(workflow_name).join("spec-source.md");
         if dest.exists() {
-            if let Some(Dialog::ImportPrd {
+            if let Some(Dialog::ImportSpec {
                 confirm_overwrite,
                 error,
                 ..
@@ -2057,13 +2057,13 @@ impl App {
         }
 
         // No conflict — copy immediately.
-        self.do_import_prd_copy(workflow_name, input);
+        self.do_import_spec_copy(workflow_name, input);
     }
 
     /// Copies the source markdown file to `.ralph/specs/<name>/spec-source.md`.
     /// Closes the dialog and sets a notification on success, or sets a timed
     /// status message on failure.
-    fn do_import_prd_copy(&mut self, workflow_name: &str, input: &str) {
+    fn do_import_spec_copy(&mut self, workflow_name: &str, input: &str) {
         let path = if std::path::Path::new(input).is_absolute() {
             std::path::PathBuf::from(input)
         } else {
@@ -2133,14 +2133,14 @@ impl App {
         });
     }
 
-    /// Scans `<repo_root>/tasks/` for `.md` files and populates `prds_tab`.
+    /// Scans `<repo_root>/tasks/` for `.md` files and populates `specs_tab`.
     ///
     /// - Files are sorted alphabetically by filename.
     /// - If the directory does not exist or contains no `.md` files, `files` is
     ///   empty and `selected` is `None`.
     /// - If files are present, `selected` defaults to `Some(0)` and `content` is
     ///   set to the full text of the first file; `scroll` is reset to 0.
-    pub fn load_prds_files(&mut self) {
+    pub fn load_specs_files(&mut self) {
         let tasks_dir = self.store.root().join("tasks");
         let mut files: Vec<String> = match std::fs::read_dir(&tasks_dir) {
             Ok(entries) => entries
@@ -2155,31 +2155,31 @@ impl App {
         files.sort();
 
         if files.is_empty() {
-            self.prds_tab.files = files;
-            self.prds_tab.selected = None;
-            self.prds_tab.content = String::new();
+            self.specs_tab.files = files;
+            self.specs_tab.selected = None;
+            self.specs_tab.content = String::new();
         } else {
             let first_path = tasks_dir.join(&files[0]);
             let content = std::fs::read_to_string(&first_path).unwrap_or_default();
-            self.prds_tab.selected = Some(0);
-            self.prds_tab.content = content;
-            self.prds_tab.scroll = 0;
-            self.prds_tab.files = files;
+            self.specs_tab.selected = Some(0);
+            self.specs_tab.content = content;
+            self.specs_tab.scroll = 0;
+            self.specs_tab.files = files;
         }
     }
 
-    /// Selects the file at `idx` in `prds_tab.files`, loads its content from disk,
+    /// Selects the file at `idx` in `specs_tab.files`, loads its content from disk,
     /// and resets the scroll offset to 0.
     ///
     /// # Panics
-    /// Panics if `idx` is out of bounds for `prds_tab.files`.
-    fn select_prds_file(&mut self, idx: usize) {
+    /// Panics if `idx` is out of bounds for `specs_tab.files`.
+    fn select_specs_file(&mut self, idx: usize) {
         let tasks_dir = self.store.root().join("tasks");
-        let path = tasks_dir.join(&self.prds_tab.files[idx]);
+        let path = tasks_dir.join(&self.specs_tab.files[idx]);
         let content = std::fs::read_to_string(&path).unwrap_or_default();
-        self.prds_tab.selected = Some(idx);
-        self.prds_tab.content = content;
-        self.prds_tab.scroll = 0;
+        self.specs_tab.selected = Some(idx);
+        self.specs_tab.content = content;
+        self.specs_tab.scroll = 0;
     }
 
     /// Returns `true` if all tasks in the named workflow have `passes == true`.
@@ -2294,7 +2294,7 @@ impl App {
                     Workflow::load(&dir)
                         .ok()
                         .map(|w| {
-                            w.prd
+                            w.data
                                 .tasks
                                 .iter()
                                 .any(|t| t.id == next_id_clone && !t.passes)

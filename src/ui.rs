@@ -1,5 +1,5 @@
 use crate::app::{
-    App, Dialog, PrdEditorField, PrdEditorMode, PrdEditorState, PrdsFocus, RunnerTab,
+    App, Dialog, SpecEditorField, SpecEditorMode, SpecEditorState, SpecsFocus, RunnerTab,
     RunnerTabState, StoryDetailField,
 };
 use crate::ralph::usage::UsageFile;
@@ -14,8 +14,8 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Full-screen PRD metadata editor takes over the entire frame.
-    if let Some(editor) = &app.prd_editor {
-        draw_prd_editor(frame, editor, frame.area());
+    if let Some(editor) = &app.spec_editor {
+        draw_spec_editor(frame, editor, frame.area());
         return;
     }
 
@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let content = outer[1];
 
     if app.active_tab == 0 {
-        draw_prds_tab(frame, app, content);
+        draw_specs_tab(frame, app, content);
     } else if app.active_tab == 1 {
         draw_workflows_tab(frame, app, content);
     } else {
@@ -57,13 +57,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Some(Dialog::RunnerHelp) => {
             draw_runner_help_dialog(frame, frame.area());
         }
-        Some(Dialog::ImportPrd {
+        Some(Dialog::ImportSpec {
             input,
             error,
             confirm_overwrite,
             ..
         }) => {
-            draw_import_prd_dialog(frame, frame.area(), input, error, *confirm_overwrite);
+            draw_import_spec_dialog(frame, frame.area(), input, error, *confirm_overwrite);
         }
         Some(Dialog::QuitConfirm) => {
             draw_quit_confirm_dialog(frame, frame.area());
@@ -76,7 +76,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 /// Renders the PRDs tab: file list (left 30%) | content preview (right 70%) | status bar.
-fn draw_prds_tab(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_specs_tab(frame: &mut Frame, app: &App, area: Rect) {
     // Vertical split: main content (flexible) | status bar (1 line)
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -92,24 +92,24 @@ fn draw_prds_tab(frame: &mut Frame, app: &App, area: Rect) {
     let focused_style = Style::default().fg(Color::Yellow);
 
     // Left pane: file list
-    let list_focused = app.prds_tab.focus == PrdsFocus::List;
+    let list_focused = app.specs_tab.focus == SpecsFocus::List;
     let list_border_style = if list_focused {
         focused_style
     } else {
         Style::default()
     };
-    let list_title = format!("PRDs ({})", app.prds_tab.files.len());
+    let list_title = format!("PRDs ({})", app.specs_tab.files.len());
     let list_block = Block::default()
         .borders(Borders::ALL)
         .title(list_title)
         .border_style(list_border_style);
 
-    if app.prds_tab.files.is_empty() {
+    if app.specs_tab.files.is_empty() {
         let empty_msg = Paragraph::new("No PRDs found in tasks/").block(list_block);
         frame.render_widget(empty_msg, panes[0]);
     } else {
         let items: Vec<ListItem> = app
-            .prds_tab
+            .specs_tab
             .files
             .iter()
             .map(|name| ListItem::new(name.as_str()))
@@ -117,34 +117,34 @@ fn draw_prds_tab(frame: &mut Frame, app: &App, area: Rect) {
         let list = List::new(items)
             .block(list_block)
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-        let mut list_state = ListState::default().with_selected(app.prds_tab.selected);
+        let mut list_state = ListState::default().with_selected(app.specs_tab.selected);
         frame.render_stateful_widget(list, panes[0], &mut list_state);
     }
 
     // Right pane: content preview
-    let content_focused = app.prds_tab.focus == PrdsFocus::Content;
+    let content_focused = app.specs_tab.focus == SpecsFocus::Content;
     let content_border_style = if content_focused {
         focused_style
     } else {
         Style::default()
     };
     let preview_title = app
-        .prds_tab
+        .specs_tab
         .selected
-        .and_then(|i| app.prds_tab.files.get(i))
+        .and_then(|i| app.specs_tab.files.get(i))
         .map(|s| s.as_str())
         .unwrap_or("Preview");
     let content_block = Block::default()
         .borders(Borders::ALL)
         .title(preview_title)
         .border_style(content_border_style);
-    let content_para = Paragraph::new(app.prds_tab.content.as_str())
+    let content_para = Paragraph::new(app.specs_tab.content.as_str())
         .block(content_block)
-        .scroll((app.prds_tab.scroll, 0));
+        .scroll((app.specs_tab.scroll, 0));
     frame.render_widget(content_para, panes[1]);
 
     // Status bar
-    let status_line = if app.prds_tab.focus == PrdsFocus::List {
+    let status_line = if app.specs_tab.focus == SpecsFocus::List {
         "[j/↓] down  [k/↑] up  [Enter] preview  [Tab] switch tab  [q]uit"
     } else {
         "[j/↓] scroll down  [k/↑] scroll up  [Esc] back to list  [Tab] switch tab  [q]uit"
@@ -237,7 +237,7 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
             let block = Block::default().borders(Borders::ALL).title(title);
 
             let items: Vec<ListItem> = workflow
-                .prd
+                .data
                 .tasks
                 .iter()
                 .map(|task| {
@@ -771,7 +771,7 @@ fn draw_new_workflow_dialog(frame: &mut Frame, area: Rect, input: &str, error: &
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
-fn draw_import_prd_dialog(
+fn draw_import_spec_dialog(
     frame: &mut Frame,
     area: Rect,
     input: &str,
@@ -861,16 +861,16 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
 /// Dispatches to the appropriate sub-renderer based on the active mode:
 ///   - StoryDetail: placeholder panel (to be fleshed out in US-003)
 ///   - Metadata / StoryList: three metadata fields + story list below
-fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
+fn draw_spec_editor(frame: &mut Frame, editor: &SpecEditorState, area: Rect) {
     let title = format!(" PRD Editor: {} ", editor.workflow_name);
     let outer_block = Block::default().borders(Borders::ALL).title(title);
     let inner_area = outer_block.inner(area);
     frame.render_widget(outer_block, area);
 
     match editor.mode {
-        PrdEditorMode::StoryDetail => draw_prd_story_detail(frame, editor, inner_area),
-        PrdEditorMode::Metadata | PrdEditorMode::StoryList => {
-            draw_prd_metadata_and_stories(frame, editor, inner_area);
+        SpecEditorMode::StoryDetail => draw_spec_task_detail(frame, editor, inner_area),
+        SpecEditorMode::Metadata | SpecEditorMode::StoryList => {
+            draw_spec_metadata_and_stories(frame, editor, inner_area);
         }
     }
 }
@@ -885,7 +885,7 @@ fn draw_prd_editor(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
 ///   hint / status   — 1 row
 ///
 /// Active section border is highlighted yellow; focused metadata field shows `_` cursor.
-fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
+fn draw_spec_metadata_and_stories(frame: &mut Frame, editor: &SpecEditorState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -899,10 +899,10 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
         .split(area);
 
     let active_style = Style::default().fg(Color::Yellow);
-    let is_metadata = editor.mode == PrdEditorMode::Metadata;
+    let is_metadata = editor.mode == SpecEditorMode::Metadata;
 
     // Project field
-    let focused = is_metadata && editor.focused_field == PrdEditorField::Project;
+    let focused = is_metadata && editor.focused_field == SpecEditorField::Project;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Project")
@@ -919,7 +919,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     frame.render_widget(Paragraph::new(text).block(block), layout[0]);
 
     // Branch field
-    let focused = is_metadata && editor.focused_field == PrdEditorField::Branch;
+    let focused = is_metadata && editor.focused_field == SpecEditorField::Branch;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Branch")
@@ -936,7 +936,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     frame.render_widget(Paragraph::new(text).block(block), layout[1]);
 
     // Description field
-    let focused = is_metadata && editor.focused_field == PrdEditorField::Description;
+    let focused = is_metadata && editor.focused_field == SpecEditorField::Description;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Description")
@@ -953,7 +953,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     frame.render_widget(Paragraph::new(text).block(block), layout[2]);
 
     // Validation Commands field (multi-line list)
-    let val_cmd_focused = is_metadata && editor.focused_field == PrdEditorField::ValidationCommands;
+    let val_cmd_focused = is_metadata && editor.focused_field == SpecEditorField::ValidationCommands;
     let val_cmd_title = format!("Validation Commands ({})", editor.validation_commands.len());
     let val_cmd_block = Block::default()
         .borders(Borders::ALL)
@@ -994,7 +994,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
     }
 
     // Stories list panel
-    let stories_focused = editor.mode == PrdEditorMode::StoryList;
+    let stories_focused = editor.mode == SpecEditorMode::StoryList;
     let stories_title = format!("Stories ({})", editor.stories.len());
     let stories_block = Block::default()
         .borders(Borders::ALL)
@@ -1050,7 +1050,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
 
 /// Renders the story detail form (US-003).
 ///
-/// Layout (inside the outer border from draw_prd_editor):
+/// Layout (inside the outer border from draw_spec_editor):
 ///   ID (60%) + Priority (40%)   — 3 rows, side-by-side
 ///   Title                       — 3 rows
 ///   Description                 — 3 rows
@@ -1059,7 +1059,7 @@ fn draw_prd_metadata_and_stories(frame: &mut Frame, editor: &PrdEditorState, are
 ///
 /// Active field border is highlighted yellow. Focused text fields append `_` cursor.
 /// In the Criteria list, the active line is shown with REVERSED highlight and `_` cursor.
-fn draw_prd_story_detail(frame: &mut Frame, editor: &PrdEditorState, area: Rect) {
+fn draw_spec_task_detail(frame: &mut Frame, editor: &SpecEditorState, area: Rect) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

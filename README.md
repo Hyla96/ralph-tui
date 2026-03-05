@@ -18,6 +18,21 @@ Each running workflow opens in its own tab. Multiple workflows can run concurren
 
 ---
 
+## Spec file layout
+
+Specs live inside the repository under `.ralph/specs/`:
+
+```
+.ralph/
+└── specs/
+    └── <feature-name>/
+        └── spec-source.md      # draft → enriched → finalized spec
+```
+
+The `/spec` skill creates this file. The `spec-researcher` agent enriches it. The `/spec-clarify` skill finalizes it. The `spec-synth` agent reads the finalized spec and writes `workflows.json`.
+
+---
+
 ## Workflow file layout
 
 Workflows live inside the repository under `.ralph/workflows/`:
@@ -134,7 +149,15 @@ git checkout <branch-name>
 just set-resources
 ```
 
-This copies the `/spec` and `/spec-synth` skills and the `ralph` agent into `~/.claude/`, making them available to Claude Code.
+This copies the following into `~/.claude/`, making them available to Claude Code:
+
+| Resource | Type | Invoked as |
+| --- | --- | --- |
+| `spec` | Skill (user-invocable) | `/spec` inside a Claude session |
+| `spec-clarify` | Skill (user-invocable) | `/spec-clarify` inside a Claude session |
+| `spec-researcher` | Agent | `claude --agent spec-researcher` from the terminal |
+| `spec-synth` | Agent | `claude --agent spec-synth` from the terminal |
+| `ralph` | Agent | `claude --agent ralph` (launched by ralph-tui automatically) |
 
 ### Step 4 — Install the binary
 
@@ -152,7 +175,7 @@ This runs `cargo install --path .` and installs the `ralph-tui` binary on your `
 mkdir my-project && cd my-project && git init && git commit --allow-empty -m 'init'
 ```
 
-### Step 6 — Generate a workflow with `/spec`
+### Step 6 — Generate a draft spec with `/spec`
 
 Open a Claude Code session inside your sandbox repo and run the `/spec` skill to describe the feature you want to build:
 
@@ -166,27 +189,55 @@ Inside the Claude Code session:
 /spec We need a feature that shows token usage for ralph usage in this TUI
 ```
 
-Claude will walk you through refining the spec.
+Claude will ask clarifying questions, then write a draft spec to `.ralph/specs/<feature>/spec-source.md`. The spec includes a `## Research Needed` section with topics for the researcher agent to investigate.
 
-### Step 7 — Synthesize `workflows.json` with `/spec-synth`
+Exit the Claude Code session when done.
 
-In the same Claude Code session, run:
+### Step 7 — Enrich the spec with `spec-researcher`
+
+Run the `spec-researcher` agent from the terminal. It reads the draft spec, performs web and codebase research, and writes findings back into the spec file:
+
+```sh
+SPEC_FILE=.ralph/specs/<feature>/spec-source.md claude --agent spec-researcher
+```
+
+The agent will confirm the time budget (default: 2 minutes) before starting. When done, the spec will have populated `## Research Findings`, `## Suggested Refinements`, and `## Open Questions from Research` sections.
+
+### Step 8 — Finalize the spec with `/spec-clarify`
+
+Open a Claude Code session and run `/spec-clarify` to review the research findings, answer open questions, and accept or reject suggested refinements:
+
+```sh
+claude
+```
+
+Inside the Claude Code session:
 
 ```
-/spec-synth
+/spec-clarify
 ```
 
-This emits `.ralph/workflows/<name>/workflows.json` containing the structured task list.
+Claude presents research summaries and asks you to resolve each open question and refinement. When you are done, it removes the draft markers and temporary research sections, leaving a finalized spec.
 
-### Step 8 — Exit Claude and launch ralph-tui
+Exit the Claude Code session when done.
 
-Exit the Claude Code session, then from the repo root:
+### Step 9 — Synthesize `workflows.json` with `spec-synth`
+
+Run the `spec-synth` agent from the terminal. It reads the finalized spec and emits `.ralph/workflows/<counter>-<feature>/workflows.json` with the structured task list:
+
+```sh
+SPEC_FILE=.ralph/specs/<feature>/spec-source.md claude --agent spec-synth
+```
+
+### Step 10 — Exit Claude and launch ralph-tui
+
+From the repo root:
 
 ```sh
 ralph-tui
 ```
 
-### Step 9 — Start the agent loop
+### Step 11 — Start the agent loop
 
 In the Workflows tab, select your workflow and press `r` to start the agent loop. Ralph will implement tasks one by one. Wait for each task to complete; the runner tab streams live output.
 

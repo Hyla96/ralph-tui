@@ -88,6 +88,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Converts a markdown string to a styled ratatui [`Text`] for display in the specs pane.
+///
+/// Uses `tui-markdown` (CommonMark via pulldown-cmark) to render headings, bold/italic,
+/// lists, checkboxes, code blocks, blockquotes, and horizontal rules.  Tables degrade
+/// gracefully: tui-markdown passes their source through as plain text without crashing.
+fn render_markdown(markdown: &str) -> ratatui::text::Text<'_> {
+    tui_markdown::from_str(markdown)
+}
+
 /// Renders the Specs tab: file list (left 30%) | content preview (right 70%) | status bar.
 fn draw_specs_tab(frame: &mut Frame, app: &App, area: Rect) {
     // Vertical split: main content (flexible) | status bar (1 line)
@@ -151,7 +160,7 @@ fn draw_specs_tab(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title(preview_title)
         .border_style(content_border_style);
-    let content_para = Paragraph::new(app.specs_tab.content.as_str())
+    let content_para = Paragraph::new(render_markdown(&app.specs_tab.content))
         .block(content_block)
         .scroll((app.specs_tab.scroll, 0));
     frame.render_widget(content_para, panes[1]);

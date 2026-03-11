@@ -1,6 +1,6 @@
 use crate::app::{
     App, ConfigScreen, Dialog, SpecEditorField, SpecEditorMode, SpecEditorState, SpecsFocus,
-    RunnerTab, RunnerTabState, TabKind, TaskDetailField,
+    RunnerTab, RunnerTabState, TabKind, TaskDetailField, WORKFLOW_PANEL_WIDTH,
 };
 use crate::ralph::RalphConfig;
 use crate::ralph::usage::UsageFile;
@@ -460,6 +460,8 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
 
     // PTY viewport (layout[1]): border title shows "Runner: {label}" for WorkflowRunner tabs
     // and just the label for SpecOp tabs.
+    // When show_workflow_panel is true, the area splits horizontally: PTY on the left
+    // (flexible) and workflow progress panel on the right (WORKFLOW_PANEL_WIDTH cols).
     // The vt100 scrollback position (set_scrollback) is updated by key handlers so that
     // PseudoTerminal renders the correct view without needing a mutable App reference.
     let log_title_text = if tab.tab_kind == TabKind::SpecOp {
@@ -471,7 +473,18 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         log_title_text,
         Style::default().fg(CLAUDE_ORANGE),
     ));
-    {
+    if tab.show_workflow_panel {
+        let pty_split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(WORKFLOW_PANEL_WIDTH)])
+            .split(layout[1]);
+        {
+            use tui_term::widget::PseudoTerminal;
+            let pseudo_term = PseudoTerminal::new(tab.parser.screen()).block(log_block);
+            frame.render_widget(pseudo_term, pty_split[0]);
+        }
+        draw_workflow_panel(frame, tab, pty_split[1]);
+    } else {
         use tui_term::widget::PseudoTerminal;
         let pseudo_term = PseudoTerminal::new(tab.parser.screen()).block(log_block);
         frame.render_widget(pseudo_term, layout[1]);
@@ -527,6 +540,46 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     frame.render_widget(Paragraph::new(buttons_line), layout[2]);
+}
+
+/// Renders the workflow progress panel that shows all tasks and their pass/fail status.
+///
+/// Renders a bordered "Workflow" box listing each task as:
+///   `{dot} {task_id}: {title}` (title truncated to fit the inner width)
+/// Tasks are shown in the order they appear in the workflow file (priority order).
+///
+/// If no workflow data is available, renders the empty bordered box.
+fn draw_workflow_panel(frame: &mut Frame, tab: &RunnerTab, area: Rect) {
+    let panel_block = Block::default().borders(Borders::ALL).title("Workflow");
+
+    let Some(workflow) = &tab.workflow else {
+        frame.render_widget(panel_block, area);
+        return;
+    };
+
+    // Inner width: outer area minus left and right borders.
+    let inner_width = area.width.saturating_sub(2) as usize;
+
+    let items: Vec<ListItem> = workflow
+        .data
+        .tasks
+        .iter()
+        .map(|task| {
+            let dot = if task.passes {
+                "\u{25cf}" // ●
+            } else {
+                "\u{25cb}" // ○
+            };
+            let prefix = format!("{dot} {}: ", task.id);
+            let prefix_len = prefix.chars().count();
+            let title_max = inner_width.saturating_sub(prefix_len);
+            let title: String = task.title.chars().take(title_max).collect();
+            ListItem::new(format!("{prefix}{title}"))
+        })
+        .collect();
+
+    let list = List::new(items).block(panel_block);
+    frame.render_widget(list, area);
 }
 
 // Claude brand orange (#DA7756).

@@ -25,6 +25,10 @@ const MAX_ITERATIONS: u32 = 10;
 // 1 tab bar + 1 task bar + 1 top border + 1 bottom border + 1 buttons bar.
 const PTY_ROW_OVERHEAD: u16 = 5;
 
+/// Width (in terminal columns) of the workflow progress panel rendered to the right of the PTY
+/// viewport when `RunnerTab::show_workflow_panel` is true.
+pub const WORKFLOW_PANEL_WIDTH: u16 = 35;
+
 /// Per-runner tab state.
 pub enum RunnerTabState {
     Running { iteration: u32 },
@@ -1467,9 +1471,20 @@ impl App {
                                 // so no load_specs_files call needed here.
                             }
                             // [w]orkflow panel: toggle the workflow progress panel.
+                            // Recreates the parser with an updated column count so the PTY
+                            // renders correctly at the new viewport width.
                             KeyCode::Char('w') => {
                                 if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
                                     tab.show_workflow_panel = !tab.show_workflow_panel;
+                                    let (cols, rows) = self.initial_size;
+                                    let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+                                    let pty_cols = if tab.show_workflow_panel {
+                                        cols.saturating_sub(WORKFLOW_PANEL_WIDTH)
+                                    } else {
+                                        cols
+                                    };
+                                    tab.parser = VtParser::new(pty_rows, pty_cols, 1000);
+                                    tab.log_scroll = 0;
                                 }
                             }
                             // Normal mode: unrecognized keys are ignored (use Insert mode to type freely).

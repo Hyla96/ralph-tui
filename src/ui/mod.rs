@@ -548,6 +548,11 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
 ///   `{dot} {task_id}: {title}` (title truncated to fit the inner width)
 /// Tasks are shown in the order they appear in the workflow file (priority order).
 ///
+/// Status styling:
+/// - Completed (`passes: true`): green `●` dot, green text
+/// - Running (matches `current_task_id`): yellow `●` dot, default text
+/// - Pending: default `○` dot, default text
+///
 /// If no workflow data is available, renders the empty bordered box.
 fn draw_workflow_panel(frame: &mut Frame, tab: &RunnerTab, area: Rect) {
     let panel_block = Block::default().borders(Borders::ALL).title("Workflow");
@@ -565,16 +570,38 @@ fn draw_workflow_panel(frame: &mut Frame, tab: &RunnerTab, area: Rect) {
         .tasks
         .iter()
         .map(|task| {
-            let dot = if task.passes {
-                "\u{25cf}" // ●
+            let is_current =
+                tab.current_task_id.as_deref() == Some(task.id.as_str());
+
+            let (dot, dot_style, text_style) = if task.passes {
+                // Completed: green ● dot, green text.
+                (
+                    "\u{25cf}", // ●
+                    Style::default().fg(Color::Green),
+                    Style::default().fg(Color::Green),
+                )
+            } else if is_current {
+                // Currently running: yellow ● dot, default text.
+                (
+                    "\u{25cf}", // ●
+                    Style::default().fg(Color::Yellow),
+                    Style::default(),
+                )
             } else {
-                "\u{25cb}" // ○
+                // Pending: default ○ dot, default text.
+                ("\u{25cb}", Style::default(), Style::default()) // ○
             };
-            let prefix = format!("{dot} {}: ", task.id);
-            let prefix_len = prefix.chars().count();
-            let title_max = inner_width.saturating_sub(prefix_len);
+
+            let id_label = format!("{}: ", task.id);
+            // dot (1 char) + space (1 char) + id_label chars
+            let prefix_chars = 2 + id_label.chars().count();
+            let title_max = inner_width.saturating_sub(prefix_chars);
             let title: String = task.title.chars().take(title_max).collect();
-            ListItem::new(format!("{prefix}{title}"))
+
+            ListItem::new(Line::from(vec![
+                Span::styled(dot, dot_style),
+                Span::styled(format!(" {id_label}{title}"), text_style),
+            ]))
         })
         .collect();
 

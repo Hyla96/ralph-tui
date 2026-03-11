@@ -1466,6 +1466,12 @@ impl App {
                                 // Runner BackTab can never reach 0 (runner index >= 2),
                                 // so no load_specs_files call needed here.
                             }
+                            // [w]orkflow panel: toggle the workflow progress panel.
+                            KeyCode::Char('w') => {
+                                if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
+                                    tab.show_workflow_panel = !tab.show_workflow_panel;
+                                }
+                            }
                             // Normal mode: unrecognized keys are ignored (use Insert mode to type freely).
                             _ => {}
                         }

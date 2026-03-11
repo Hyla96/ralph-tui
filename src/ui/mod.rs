@@ -504,6 +504,11 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Red),
         ))
     } else {
+        let wf_label = if tab.show_workflow_panel {
+            "[w]orkflow:hide"
+        } else {
+            "[w]orkflow:show"
+        };
         match &tab.state {
             RunnerTabState::Running { .. } => {
                 let auto_label = if tab.auto_continue {
@@ -513,7 +518,7 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 // [c]continue is never shown in Running state regardless of auto mode.
                 Line::from(Span::raw(format!(
-                    "[i]nsert  [s]stop  {auto_label}  [?]help  [q]uit"
+                    "[i]nsert  [s]stop  {auto_label}  {wf_label}  [?]help  [q]uit"
                 )))
             }
             RunnerTabState::Done => {
@@ -524,17 +529,18 @@ fn draw_runner_tab(frame: &mut Frame, app: &App, area: Rect) {
                     && !tab.auto_continue
                     && !workflow_complete;
                 if show_continue {
-                    Line::from(vec![
-                        Span::raw("[c]continue  "),
-                        Span::raw("[x]close  [?]help"),
-                    ])
+                    Line::from(Span::raw(format!(
+                        "[c]continue  [x]close  {wf_label}  [?]help"
+                    )))
                 } else {
-                    Line::from(Span::raw("[x]close  [?]help"))
+                    Line::from(Span::raw(format!("[x]close  {wf_label}  [?]help")))
                 }
             }
-            RunnerTabState::Stopped => Line::from(Span::raw("[x]close  [r]estart  [?]help")),
+            RunnerTabState::Stopped => {
+                Line::from(Span::raw(format!("[x]close  [r]estart  {wf_label}  [?]help")))
+            }
             RunnerTabState::Error(_) => Line::from(Span::styled(
-                "[x]close  [q]quit  [?]help",
+                format!("[x]close  {wf_label}  [q]quit  [?]help"),
                 Style::default().fg(Color::Red),
             )),
         }
@@ -991,8 +997,8 @@ fn draw_help_dialog(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
-    // 52 wide (2 border + 50 content), 19 tall (2 border + 17 content rows)
-    let dialog_rect = centered_rect(52, 19, area);
+    // 52 wide (2 border + 50 content), 20 tall (2 border + 18 content rows)
+    let dialog_rect = centered_rect(52, 20, area);
     frame.render_widget(Clear, dialog_rect);
 
     let header_style = Style::default().add_modifier(Modifier::BOLD);
@@ -1007,6 +1013,7 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
         Line::from("  Tab         next tab"),
         Line::from("  Shift+Tab   prev tab"),
         Line::from("  t+1..9      switch tab by number"),
+        Line::from("  w           toggle workflow panel"),
         Line::from("  x           close tab"),
         Line::from("  ?           this help"),
         Line::from("  q           quit"),

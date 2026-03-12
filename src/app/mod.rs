@@ -29,6 +29,15 @@ const PTY_ROW_OVERHEAD: u16 = 5;
 /// viewport when `RunnerTab::show_workflow_panel` is true.
 pub const WORKFLOW_PANEL_WIDTH: u16 = 35;
 
+/// Returns the PTY column width, accounting for the workflow panel if shown.
+fn pty_cols(terminal_cols: u16, show_workflow_panel: bool) -> u16 {
+    if show_workflow_panel {
+        terminal_cols.saturating_sub(WORKFLOW_PANEL_WIDTH)
+    } else {
+        terminal_cols
+    }
+}
+
 /// Per-runner tab state.
 pub enum RunnerTabState {
     Running { iteration: u32 },
@@ -88,6 +97,9 @@ pub struct RunnerTab {
     /// Cleared at the start of each new iteration and consumed in the `done` block to
     /// determine whether the task should be treated as a success.
     pub saw_complete: bool,
+    /// Sender used to propagate terminal resize events to the PTY subprocess.
+    /// `None` when the subprocess has exited (send failed) or not yet started.
+    pub resize_tx: Option<UnboundedSender<(u16, u16)>>,
     /// When true, the workflow progress panel is shown on the right side of the PTY viewport.
     /// Defaults to `true` for `WorkflowRunner` tabs, `false` for `SpecOp` tabs.
     /// Toggled by pressing `w` in normal mode.
@@ -940,7 +952,8 @@ pub struct App {
     pub status_message_expires: Option<Instant>,
     /// Terminal size at startup; used as initial PTY size for runner tasks.
     pub initial_size: (u16, u16),
-    /// One sender per active runner task; used to propagate terminal resize events.
+    /// Resize senders for non-tab PTY processes (synth only).
+    /// Runner tab resize senders live on each `RunnerTab::resize_tx`.
     /// Dead senders (task exited) are pruned lazily when the next resize event arrives.
     pub resize_txs: Vec<UnboundedSender<(u16, u16)>>,
     /// Receives file-change notifications from the OS-native watcher.
@@ -1068,14 +1081,21 @@ impl App {
         match event::read()? {
             Event::Resize(cols, rows) => {
                 let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
-                // Broadcast new size to all active PTY runners; prune dead senders.
+                // Broadcast new size to synth PTY; prune dead senders.
                 self.resize_txs.retain(|tx| tx.send((cols, pty_rows)).is_ok());
                 // Recreate each RunnerTab's vt100::Parser with the new dimensions.
                 // vt100::Parser has no resize() method, so a new parser is created.
                 // Known limitation: the screen state is cleared on resize — scrollback is not replayed.
                 for tab in &mut self.runner_tabs {
-                    tab.parser = VtParser::new(pty_rows, cols, 1000);
+                    let tab_cols = pty_cols(cols, tab.show_workflow_panel);
+                    tab.parser = VtParser::new(pty_rows, tab_cols, 1000);
                     tab.log_scroll = 0;
+                    // Notify the tab's PTY subprocess of the new size.
+                    if let Some(tx) = &tab.resize_tx
+                        && tx.send((tab_cols, pty_rows)).is_err()
+                    {
+                        tab.resize_tx = None;
+                    }
                 }
                 // Recreate synthesis parser with new dimensions (same limitation as runner tabs).
                 if self.synth_parser.is_some() {
@@ -1478,13 +1498,15 @@ impl App {
                                     tab.show_workflow_panel = !tab.show_workflow_panel;
                                     let (cols, rows) = self.initial_size;
                                     let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
-                                    let pty_cols = if tab.show_workflow_panel {
-                                        cols.saturating_sub(WORKFLOW_PANEL_WIDTH)
-                                    } else {
-                                        cols
-                                    };
-                                    tab.parser = VtParser::new(pty_rows, pty_cols, 1000);
+                                    let tab_cols = pty_cols(cols, tab.show_workflow_panel);
+                                    tab.parser = VtParser::new(pty_rows, tab_cols, 1000);
                                     tab.log_scroll = 0;
+                                    // Notify the PTY subprocess of the new viewport width.
+                                    if let Some(tx) = &tab.resize_tx
+                                        && tx.send((tab_cols, pty_rows)).is_err()
+                                    {
+                                        tab.resize_tx = None;
+                                    }
                                 }
                             }
                             // Normal mode: unrecognized keys are ignored (use Insert mode to type freely).
@@ -3247,15 +3269,23 @@ impl App {
 
         let (cols, rows) = self.initial_size;
         let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+        // WorkflowRunner tabs default to show_workflow_panel=true; account for panel width.
+        let show_panel = if let Some(reuse) = reuse_idx {
+            self.runner_tabs[reuse].show_workflow_panel
+        } else {
+            true
+        };
+        let tab_cols = pty_cols(cols, show_panel);
         if let Some(reuse) = reuse_idx {
             let tab = &mut self.runner_tabs[reuse];
             // Reset parser with current terminal dimensions; scrollback capacity = 1000.
-            tab.parser = VtParser::new(pty_rows, cols, 1000);
+            tab.parser = VtParser::new(pty_rows, tab_cols, 1000);
             tab.log_scroll = 0;
             tab.state = RunnerTabState::Running { iteration: 1 };
             tab.runner_rx = Some(rx);
             tab.runner_kill_tx = Some(kill_tx);
             tab.stdin_tx = Some(stdin_tx);
+            tab.resize_tx = Some(resize_tx);
             tab.auto_continue = false;
             tab.current_task_id = current_task_id;
             tab.current_task_title = current_task_title;
@@ -3273,11 +3303,12 @@ impl App {
             let tab = RunnerTab {
                 label: name.clone(),
                 tab_kind: TabKind::WorkflowRunner,
-                parser: VtParser::new(pty_rows, cols, 1000),
+                parser: VtParser::new(pty_rows, tab_cols, 1000),
                 state: RunnerTabState::Running { iteration: 1 },
                 runner_rx: Some(rx),
                 runner_kill_tx: Some(kill_tx),
                 stdin_tx: Some(stdin_tx),
+                resize_tx: Some(resize_tx),
                 log_scroll: 0,
                 auto_continue: false,
                 current_task_id,
@@ -3299,14 +3330,13 @@ impl App {
             self.active_tab = 1 + self.runner_tabs.len(); // runner tabs are 2-indexed in active_tab (0=Specs, 1=Workflows)
         }
 
-        self.resize_txs.push(resize_tx);
         drop(tokio::spawn(runner_task(
             plan_dir,
             repo_root,
             tx,
             kill_rx,
             stdin_rx,
-            (cols, pty_rows),
+            (tab_cols, pty_rows),
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,
@@ -3366,6 +3396,7 @@ impl App {
             runner_rx: Some(rx),
             runner_kill_tx: Some(kill_tx),
             stdin_tx: Some(stdin_tx),
+            resize_tx: Some(resize_tx),
             log_scroll: 0,
             auto_continue: false,
             current_task_id: None,
@@ -3386,7 +3417,6 @@ impl App {
 
         self.runner_tabs.push(tab);
         self.active_tab = 1 + self.runner_tabs.len();
-        self.resize_txs.push(resize_tx);
 
         drop(tokio::spawn(spec_op_task(
             skill.to_string(),
@@ -3433,14 +3463,20 @@ impl App {
 
         let (cols, rows) = self.initial_size;
         let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+        let show_panel = self
+            .runner_tabs
+            .get(tab_idx)
+            .is_some_and(|t| t.show_workflow_panel);
+        let tab_cols = pty_cols(cols, show_panel);
 
         if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
-            tab.parser = VtParser::new(pty_rows, cols, 1000);
+            tab.parser = VtParser::new(pty_rows, tab_cols, 1000);
             tab.log_scroll = 0;
             tab.state = RunnerTabState::Running { iteration: 1 };
             tab.runner_rx = Some(rx);
             tab.runner_kill_tx = Some(kill_tx);
             tab.stdin_tx = Some(stdin_tx);
+            tab.resize_tx = Some(resize_tx);
             tab.auto_continue = false;
             tab.current_task_id = current_task_id;
             tab.current_task_title = current_task_title;
@@ -3455,14 +3491,13 @@ impl App {
             tab.workflow = loaded_workflow;
         }
 
-        self.resize_txs.push(resize_tx);
         drop(tokio::spawn(runner_task(
             plan_dir,
             repo_root,
             tx,
             kill_rx,
             stdin_rx,
-            (cols, pty_rows),
+            (tab_cols, pty_rows),
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,
@@ -3504,6 +3539,14 @@ impl App {
         let (stdin_tx, stdin_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel::<(u16, u16)>();
 
+        let show_panel = self
+            .runner_tabs
+            .get(tab_idx)
+            .is_some_and(|t| t.show_workflow_panel);
+        let (cols, rows) = self.initial_size;
+        let pty_rows = rows.saturating_sub(PTY_ROW_OVERHEAD);
+        let tab_cols = pty_cols(cols, show_panel);
+
         if let Some(tab) = self.runner_tabs.get_mut(tab_idx) {
             // Reset token and cost fields at the start of a new iteration.
             tab.current_task_input_tokens = 0;
@@ -3515,6 +3558,7 @@ impl App {
             tab.runner_rx = Some(rx);
             tab.runner_kill_tx = Some(kill_tx);
             tab.stdin_tx = Some(stdin_tx);
+            tab.resize_tx = Some(resize_tx);
             tab.state = RunnerTabState::Running {
                 iteration: new_iteration,
             };
@@ -3524,15 +3568,13 @@ impl App {
             tab.workflow = loaded_workflow;
         }
 
-        self.resize_txs.push(resize_tx);
-        let (cols, rows) = self.initial_size;
         drop(tokio::spawn(runner_task(
             plan_dir,
             repo_root,
             tx,
             kill_rx,
             stdin_rx,
-            (cols, rows.saturating_sub(PTY_ROW_OVERHEAD)),
+            (tab_cols, pty_rows),
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,

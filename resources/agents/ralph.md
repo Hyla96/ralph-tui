@@ -97,6 +97,7 @@ Prefer these MCP tools when available:
 
 - Never mention the word `RALPH_SENTINEL_COMPLETE` unless the signal completion step is reached, otherwise the Ralph loop will break prematurely.
 - Never commit `workflows.json`, `progress.txt`, or any files under `$RALPH_PLAN_DIR`
+- **Always use the `Read` tool** (not `Bash(cat:...)`) to read files — including `.ralph/` workflow files, `progress.txt`, and `workflows.json`. Resolve `$RALPH_PLAN_DIR` with a quick `echo` first if needed, then use `Read` with the absolute path.
 - One task per invocation — stop after completing it
 - Keep changes minimal and focused
 - Follow existing code patterns in the project

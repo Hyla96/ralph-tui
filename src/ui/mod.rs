@@ -21,8 +21,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     // Full-screen config screen takes over the entire frame.
+    // Note: no early return — dialog overlays (e.g. AgentPicker) must still render on top.
     if let Some(config_screen) = &app.config_screen {
-        draw_config_screen(frame, config_screen, &app.config, frame.area());
+        draw_config_screen(frame, config_screen, &app.config, &app.available_agents, frame.area());
+
+        // Only the AgentPicker dialog can appear on top of the config screen.
+        if let Some(Dialog::AgentPicker { selected }) = &app.dialog {
+            draw_agent_picker_dialog(frame, frame.area(), &app.available_agents, *selected);
+        }
         return;
     }
 
@@ -83,6 +89,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Some(Dialog::SynthConfirm { spec_name }) => {
             draw_synth_confirm_dialog(frame, frame.area(), spec_name);
+        }
+        Some(Dialog::AgentPicker { selected }) => {
+            draw_agent_picker_dialog(frame, frame.area(), &app.available_agents, *selected);
         }
         None => {}
     }
@@ -1026,6 +1035,61 @@ fn draw_runner_help_dialog(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines).block(block), dialog_rect);
 }
 
+/// Renders the agent picker dropdown overlay.
+///
+/// Shows a scrollable list of available agents with the currently selected item
+/// highlighted. Height is capped at 22 rows (20 visible items + 2 border rows).
+fn draw_agent_picker_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    agents: &[String],
+    selected: usize,
+) {
+    const MAX_VISIBLE: usize = 20;
+    let visible = agents.len().min(MAX_VISIBLE);
+    let dialog_height = (visible + 2) as u16; // +2 for borders
+    let dialog_width = agents
+        .iter()
+        .map(|a| a.len())
+        .max()
+        .unwrap_or(10)
+        .clamp(20, 60) as u16
+        + 4; // 2 border + 2 padding
+
+    let dialog_rect = centered_rect(dialog_width, dialog_height, area);
+    frame.render_widget(Clear, dialog_rect);
+
+    // Compute scroll offset so the selected item is always visible.
+    let scroll_offset = if selected >= MAX_VISIBLE {
+        selected - MAX_VISIBLE + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = agents
+        .iter()
+        .skip(scroll_offset)
+        .take(MAX_VISIBLE)
+        .enumerate()
+        .map(|(i, name)| {
+            let actual_idx = i + scroll_offset;
+            let style = if actual_idx == selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!(" {name} ")).style(style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select Agent ");
+    let list = List::new(items).block(block);
+    let mut state = ListState::default();
+    frame.render_stateful_widget(list, dialog_rect, &mut state);
+}
+
 /// Renders the full-screen spec editor.
 ///
 /// Dispatches to the appropriate sub-renderer based on the active mode:
@@ -1375,6 +1439,7 @@ fn draw_config_screen(
     frame: &mut Frame,
     config_screen: &ConfigScreen,
     config: &RalphConfig,
+    _available_agents: &[String],
     area: Rect,
 ) {
     let outer_block = Block::default()
@@ -1425,9 +1490,28 @@ fn draw_config_screen(
         mode_toggle,
     ]);
 
-    frame.render_widget(Paragraph::new(vec![skip_line, mode_line]), layout[0]);
+    // Row 2: --agent selector (opens a picker dropdown on Space/Enter)
+    let agent_label = "Agent (--agent)";
+    let agent_toggle = Span::styled(
+        format!("[{}]", config.agent_name),
+        Style::default().fg(Color::Cyan),
+    );
+    let agent_style = if config_screen.selected_row == 2 {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    };
+    let agent_line = Line::from(vec![
+        Span::styled(format!("  {agent_label:<50}"), agent_style),
+        agent_toggle,
+    ]);
+
+    frame.render_widget(
+        Paragraph::new(vec![skip_line, mode_line, agent_line]),
+        layout[0],
+    );
 
     // Hint line
-    let hint = Line::from("[Esc] Back  [↑↓] Navigate  [Space] Toggle");
+    let hint = Line::from("[Esc] Back  [↑↓] Navigate  [Space/Enter] Toggle / Open picker");
     frame.render_widget(Paragraph::new(hint), layout[1]);
 }

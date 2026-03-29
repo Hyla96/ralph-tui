@@ -151,6 +151,11 @@ pub enum Dialog {
     SynthConfirm {
         spec_name: String,
     },
+    /// Scrollable dropdown for picking the `--agent` value from `available_agents`.
+    /// `selected` is the index of the currently highlighted item.
+    AgentPicker {
+        selected: usize,
+    },
 }
 
 /// Which field of the metadata form currently has focus.
@@ -1137,7 +1142,7 @@ impl App {
                         }
                         KeyCode::Down | KeyCode::Char('j') => {
                             if let Some(cs) = &mut self.config_screen {
-                                cs.selected_row = (cs.selected_row + 1).min(1);
+                                cs.selected_row = (cs.selected_row + 1).min(2);
                             }
                         }
                         KeyCode::Char(' ') | KeyCode::Enter => {
@@ -1154,6 +1159,15 @@ impl App {
                                 1 => {
                                     self.config.permission_mode =
                                         self.config.permission_mode.cycle();
+                                }
+                                2 => {
+                                    // Open the agent picker dropdown.
+                                    let selected = self
+                                        .available_agents
+                                        .iter()
+                                        .position(|a| *a == self.config.agent_name)
+                                        .unwrap_or(0);
+                                    self.dialog = Some(Dialog::AgentPicker { selected });
                                 }
                                 _ => {}
                             }
@@ -1665,6 +1679,37 @@ impl App {
                 }
                 KeyCode::Enter => {
                     self.handle_import_spec_submit(&workflow_name, &input);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // AgentPicker dropdown: ↑/↓ navigate, Enter/Space confirm, Esc cancel.
+        if matches!(self.dialog, Some(Dialog::AgentPicker { .. })) {
+            match code {
+                KeyCode::Esc => {
+                    self.dialog = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let Some(Dialog::AgentPicker { selected }) = &mut self.dialog {
+                        *selected = selected.saturating_sub(1);
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let Some(Dialog::AgentPicker { selected }) = &mut self.dialog {
+                        let max = self.available_agents.len().saturating_sub(1);
+                        *selected = (*selected + 1).min(max);
+                    }
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    if let Some(Dialog::AgentPicker { selected }) = &self.dialog
+                        && let Some(name) = self.available_agents.get(*selected)
+                    {
+                        self.config.agent_name = name.clone();
+                        let _ = self.store.save_config(&self.config);
+                    }
+                    self.dialog = None;
                 }
                 _ => {}
             }

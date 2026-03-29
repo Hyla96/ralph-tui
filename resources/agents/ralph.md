@@ -75,12 +75,11 @@ If you discover a **reusable pattern**, add it to the `## Codebase Patterns` sec
 
 ## Update Documentation Files
 
-Before committing, review **all** project documentation files you read in step 1. Update any file affected by your changes:
+Before committing, review **all** project documentation files. Update any file affected by your changes:
 
 - `CLAUDE.md` — codebase notes, build commands, patterns, gotchas
 - `README.md` — user-facing docs, feature descriptions, setup instructions
 - `CHANGELOG.md` — notable changes, new features, fixes
-- `COMPONENT_ARCHITECTURE.md` — module structure, component relationships
 - Any other doc files at the project root or in edited directories
 
 Add genuinely reusable knowledge:
@@ -109,6 +108,7 @@ Prefer these MCP tools when available:
 
 ## Rules
 
+- **Never use `Bash(*)` if you have a native alternative** — use native (eg. `Grep`, `Glob`, etc...) tools. They are faster, never trigger permission prompts, and produce better output.
 - Never mention the word `RALPH_SENTINEL_COMPLETE` unless the signal completion step is reached, otherwise the Ralph loop will break prematurely.
 - Never commit `workflows.json`, `progress.txt`, or any files under `$RALPH_PLAN_DIR`
 - **Always use the `Read` tool** (not `Bash(cat:...)`) to read files — including `.ralph/` workflow files, `progress.txt`, and `workflows.json`. Resolve `$RALPH_PLAN_DIR` with a quick `echo` first if needed, then use `Read` with the absolute path.

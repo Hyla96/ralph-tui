@@ -228,7 +228,7 @@ pub struct ConfigScreen {
     pub selected_row: usize,
 }
 
-/// Spawns `claude --agent ralph` inside a PTY and streams output lines back via `tx`.
+/// Spawns `claude --agent <agent_name>` inside a PTY and streams output lines back via `tx`.
 /// Listens on `kill_rx` for an early termination signal.
 /// Lines received on `stdin_rx` are forwarded (with a trailing `\n`) to the PTY stdin.
 #[allow(clippy::too_many_arguments)]
@@ -242,13 +242,15 @@ async fn runner_task(
     resize_rx: UnboundedReceiver<(u16, u16)>,
     skip_permissions: bool,
     permission_mode: crate::ralph::config::PermissionMode,
+    agent_name: String,
 ) {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
     // Send startup info through the channel so it appears in the vt100 screen, not stderr.
     let _ = tx.send(RunnerEvent::Bytes(
         format!(
-            "[runner] spawning claude in {}\r\n[runner] RALPH_PLAN_DIR={}\r\n",
+            "[runner] spawning claude --agent {} in {}\r\n[runner] RALPH_PLAN_DIR={}\r\n",
+            agent_name,
             repo_root.display(),
             plan_dir.display()
         )
@@ -277,7 +279,7 @@ async fn runner_task(
     if let Some(mode) = permission_mode.as_cli_value() {
         cmd.args(["--permission-mode", mode]);
     }
-    cmd.args(["--agent", "ralph", "Implement the next task."]);
+    cmd.args(["--agent", &agent_name, "Implement the next task."]);
     cmd.cwd(&repo_root);
     cmd.env("RALPH_PLAN_DIR", &plan_dir);
 
@@ -981,6 +983,8 @@ pub struct App {
     pub synth_workflow_name: Option<String>,
     /// Loaded project configuration (from `.ralph/ralph.config.json`).
     pub config: RalphConfig,
+    /// Agent names available in `~/.claude/agents/`, used to populate the config screen picker.
+    pub available_agents: Vec<String>,
 }
 
 impl App {
@@ -990,6 +994,9 @@ impl App {
 
         // Load config before `store` is moved into the App struct.
         let config = store.load_config();
+
+        // Enumerate agents from ~/.claude/agents/ for the config screen picker.
+        let available_agents = Store::list_agents();
 
         // Capture the root path before `store` is moved into the App struct.
         let root = store.root().to_path_buf();
@@ -1033,6 +1040,7 @@ impl App {
             synth_kill_tx: None,
             synth_workflow_name: None,
             config,
+            available_agents,
         };
         app.load_current_workflow();
         app.load_specs_files();
@@ -3340,6 +3348,7 @@ impl App {
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,
+            self.config.agent_name.clone(),
         )));
     }
 
@@ -3501,6 +3510,7 @@ impl App {
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,
+            self.config.agent_name.clone(),
         )));
     }
 
@@ -3578,6 +3588,7 @@ impl App {
             resize_rx,
             self.config.dangerously_skip_permissions,
             self.config.permission_mode,
+            self.config.agent_name.clone(),
         )));
     }
 }

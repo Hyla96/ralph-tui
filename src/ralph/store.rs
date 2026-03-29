@@ -128,6 +128,33 @@ impl Store {
         Ok(())
     }
 
+    /// Reads `~/.claude/agents/` and returns sorted agent names (filenames without `.md`).
+    /// Always falls back to `["ralph"]` when the directory is absent or unreadable,
+    /// ensuring a valid default is always present.
+    pub fn list_agents() -> Vec<String> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let agents_dir = std::path::Path::new(&home).join(".claude").join("agents");
+        if !agents_dir.exists() {
+            return vec!["ralph".to_string()];
+        }
+        let Ok(entries) = std::fs::read_dir(&agents_dir) else {
+            return vec!["ralph".to_string()];
+        };
+        let mut agents: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                name.strip_suffix(".md").map(|s| s.to_string())
+            })
+            .collect();
+        if agents.is_empty() {
+            agents.push("ralph".to_string());
+        }
+        agents.sort();
+        agents
+    }
+
     /// Returns the repo root path.
     pub fn root(&self) -> &Path {
         &self.root

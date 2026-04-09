@@ -51,8 +51,20 @@ clean:
 
 # Copy agents and skills into ~/.claude (removes old prd/prd-clarify skill dirs first)
 set-resources:
-    rm -rf ~/.claude/skills/prd ~/.claude/skills/prd-clarify
     cp -rf ./resources/ ~/.claude/
+
+# Sync tracked agents and skills from ~/.claude back into ./resources/
+get-resources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    agents=(ralph-coder ralph spec-researcher spec-synth)
+    skills=(absolute go grill-me spec spec-clarify spec-finalize)
+    for a in "${agents[@]}"; do
+        cp -f ~/.claude/agents/"$a".md ./resources/agents/"$a".md
+    done
+    for s in "${skills[@]}"; do
+        cp -rf ~/.claude/skills/"$s"/ ./resources/skills/"$s"/
+    done
 
 # Installs this app as `ralph-tui` command
 install:

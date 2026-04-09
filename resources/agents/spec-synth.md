@@ -23,6 +23,7 @@ Read the finalized spec from the path in `$SPEC_FILE`. If the variable is not se
 ```json
 {
   "project": "[Project Name]",
+  "jiraTicket": "[PROJ-1234 or omit field if not specified]",
   "branchName": "[feature-name-kebab-case]",
   "description": "[Feature description from spec title/intro]",
   "validationCommands": ["cargo build", "cargo clippy -- -D warnings"],
@@ -45,8 +46,8 @@ Read the finalized spec from the path in `$SPEC_FILE`. If the variable is not se
 ## Workflow
 
 1. Read `$SPEC_FILE`
-2. Extract project name, feature name, description, and all tasks
-3. Derive `branchName` from the feature name (kebab-case)
+2. Extract project name, feature name, description, Jira ticket (if present), and all tasks
+3. Derive `branchName` from the feature name (kebab-case). If a Jira ticket is specified, prefix the branch name with the lowercased ticket number (e.g. `proj-1234-feature-name`)
 4. Convert each task / requirement into a task entry
 5. Order tasks by dependency (schema/data first, then backend logic, then UI)
 6. Assign sequential priorities matching the dependency order
@@ -122,8 +123,9 @@ For tasks that change UI, also include `"Verify in browser using dev-browser ski
 2. IDs are sequential: TASK-001, TASK-002, etc.
 3. Priority matches dependency order, then document order
 4. All tasks start with `"passes": false` and empty `"notes": ""`
-5. `branchName`: derived from feature name, kebab-case
-6. `validationCommands`: use the project's existing commands. Default to `["cargo build", "cargo clippy -- -D warnings"]` for Rust projects. If the spec specifies different commands, use those.
+5. `branchName`: derived from feature name, kebab-case. If a Jira ticket is present, prefix with the lowercased ticket number (e.g. `proj-1234-feature-name`)
+6. `jiraTicket`: include the Jira ticket string if the spec contains a `**Jira Ticket:**` line; omit the field entirely if not present
+7. `validationCommands`: use the project's existing commands. Default to `["cargo build", "cargo clippy -- -D warnings"]` for Rust projects. If the spec specifies different commands, use those.
 
 ---
 
@@ -153,7 +155,8 @@ Before writing workflows.json, validate the output. If ANY check fails, print an
 ### Required field checks
 
 - `project` is a non-empty string
-- `branchName` is a non-empty kebab-case string
+- `jiraTicket`, if present, is a non-empty string matching a Jira ticket pattern (e.g. `PROJ-1234`)
+- `branchName` is a non-empty kebab-case string; if `jiraTicket` is present, `branchName` starts with the lowercased ticket number
 - `description` is a non-empty string
 - `validationCommands` is a non-empty array of strings
 - `tasks` is a non-empty array

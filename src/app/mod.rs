@@ -463,10 +463,12 @@ async fn runner_task(
 }
 
 /// Spawns `claude --dangerously-skip-permissions /spec-synth` inside a PTY in the
-/// workflow directory and streams output back via `tx`.
+/// project root directory and streams output back via `tx`.
+/// Sets `SPEC_FILE` so the spec-synth agent knows which spec to read.
 /// Listens on `kill_rx` for an early termination signal.
 async fn synth_task(
-    workflow_dir: PathBuf,
+    project_root: PathBuf,
+    spec_file: PathBuf,
     tx: UnboundedSender<RunnerEvent>,
     kill_rx: oneshot::Receiver<()>,
     size: (u16, u16),
@@ -478,7 +480,7 @@ async fn synth_task(
     let _ = tx.send(RunnerEvent::Bytes(
         format!(
             "[synth] spawning claude spec-synth in {}\r\n",
-            workflow_dir.display()
+            project_root.display()
         )
         .into_bytes(),
     ));
@@ -503,7 +505,8 @@ async fn synth_task(
         cmd.arg("--dangerously-skip-permissions");
     }
     cmd.arg("/spec-synth");
-    cmd.cwd(&workflow_dir);
+    cmd.env("SPEC_FILE", spec_file.to_string_lossy().as_ref());
+    cmd.cwd(&project_root);
 
     let mut child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
@@ -3102,7 +3105,7 @@ impl App {
             return;
         }
 
-        let workflow_dir = self.store.workflow_dir(&name);
+        let project_root = self.store.root().to_path_buf();
         let spec_source = self.store.spec_dir(&name).join("spec-source.md");
         if !spec_source.exists() {
             self.status_message =
@@ -3125,7 +3128,8 @@ impl App {
         self.resize_txs.push(resize_tx);
 
         drop(tokio::spawn(synth_task(
-            workflow_dir,
+            project_root,
+            spec_source,
             tx,
             kill_rx,
             (cols, pty_rows),

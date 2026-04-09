@@ -33,6 +33,7 @@ Ask the user for a **long, detailed description** of:
 - The problem they want to solve
 - Any potential ideas for solutions
 - Why this matters now
+- **Jira ticket number** (optional) — if provided, it will be included in the spec and used to prefix the branch name in the generated workflow
 
 Don't settle for a one-liner. Push for detail:
 
@@ -43,6 +44,7 @@ Don't hold back -- the more detail, the better the spec. Tell me:
 1. What problem are you solving? Who feels the pain?
 2. What does your ideal solution look like?
 3. Any constraints, deadlines, or dependencies I should know about?
+4. Do you have a Jira ticket number for this? (optional -- e.g. PROJ-1234)
 ```
 
 ---
@@ -148,6 +150,14 @@ Generate the spec with these sections. Sections 3 and 4 are preliminary and will
 ### 1. Introduction/Overview
 
 Brief description of the feature and the problem it solves.
+
+If a Jira ticket was provided, include it as metadata at the top of the spec:
+
+```markdown
+**Jira Ticket:** PROJ-1234
+```
+
+If no Jira ticket was provided, omit this line entirely.
 
 ### 2. Goals
 

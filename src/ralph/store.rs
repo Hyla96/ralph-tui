@@ -78,6 +78,7 @@ impl Store {
 
         let starter = serde_json::json!({
             "project": name,
+            "jiraTicket": null,
             "branchName": "",
             "description": "",
             "validationCommands": [],

@@ -17,6 +17,8 @@ pub struct Task {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowJson {
     pub project: String,
+    #[serde(rename = "jiraTicket", default, skip_serializing_if = "Option::is_none")]
+    pub jira_ticket: Option<String>,
     #[serde(rename = "branchName")]
     pub branch_name: String,
     pub description: String,

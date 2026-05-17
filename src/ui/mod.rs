@@ -218,10 +218,19 @@ fn draw_workflows_tab(frame: &mut Frame, app: &App, area: Rect) {
                     .spec_dir(name)
                     .join("spec-source.md")
                     .exists();
+                let branch = {
+                    let dir = app.store.workflow_dir(name);
+                    Workflow::load(&dir)
+                        .ok()
+                        .map(|w| w.data.branch_name)
+                        .filter(|b| !b.is_empty())
+                        .map(|b| format!(" ({})", b))
+                        .unwrap_or_default()
+                };
                 let label = if has_src {
-                    format!("{name} [src]")
+                    format!("{name} [src]{branch}")
                 } else {
-                    name.clone()
+                    format!("{name}{branch}")
                 };
                 ListItem::new(label)
             })

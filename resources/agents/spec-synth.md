@@ -47,7 +47,7 @@ Read the finalized spec from the path in `$SPEC_FILE`. If the variable is not se
 
 1. Read `$SPEC_FILE`
 2. Extract project name, feature name, description, Jira ticket (if present), and all tasks
-3. Derive `branchName` from the feature name (kebab-case). If a Jira ticket is specified, prefix the branch name with the lowercased ticket number (e.g. `proj-1234-feature-name`)
+3. Derive `branchName` from the feature name (kebab-case). If a Jira ticket is specified, prefix the branch name with the ticket number (e.g. `PROJ-1234-feature-name`)
 4. Convert each task / requirement into a task entry
 5. Order tasks by dependency (schema/data first, then backend logic, then UI)
 6. Assign sequential priorities matching the dependency order
@@ -123,7 +123,7 @@ For tasks that change UI, also include `"Verify in browser using dev-browser ski
 2. IDs are sequential: TASK-001, TASK-002, etc.
 3. Priority matches dependency order, then document order
 4. All tasks start with `"passes": false` and empty `"notes": ""`
-5. `branchName`: derived from feature name, kebab-case. If a Jira ticket is present, prefix with the lowercased ticket number (e.g. `proj-1234-feature-name`)
+5. `branchName`: derived from feature name, kebab-case. If a Jira ticket is present, prefix with the ticket number (e.g. `PROJ-1234-feature-name`)
 6. `jiraTicket`: include the Jira ticket string if the spec contains a `**Jira Ticket:**` line; omit the field entirely if not present
 7. `validationCommands`: use the project's existing commands. Default to `["cargo build", "cargo clippy -- -D warnings"]` for Rust projects. If the spec specifies different commands, use those.
 
@@ -134,9 +134,11 @@ For tasks that change UI, also include `"Verify in browser using dev-browser ski
 If a spec has big features, split them:
 
 **Original:**
+
 > "Add user notification system"
 
 **Split into:**
+
 1. TASK-001: Add notifications table to database
 2. TASK-002: Create notification service for sending notifications
 3. TASK-003: Add notification bell icon to header
@@ -156,7 +158,7 @@ Before writing workflows.json, validate the output. If ANY check fails, print an
 
 - `project` is a non-empty string
 - `jiraTicket`, if present, is a non-empty string matching a Jira ticket pattern (e.g. `PROJ-1234`)
-- `branchName` is a non-empty kebab-case string; if `jiraTicket` is present, `branchName` starts with the lowercased ticket number
+- `branchName` is a non-empty kebab-case string; if `jiraTicket` is present, `branchName` starts with the ticket number
 - `description` is a non-empty string
 - `validationCommands` is a non-empty array of strings
 - `tasks` is a non-empty array
@@ -197,6 +199,7 @@ Write `workflows.json` to `.ralph/workflows/<counter>-<feature-name>/workflows.j
 - Create the directory if it does not exist
 
 To determine the counter:
+
 1. List existing directories in `.ralph/workflows/`
 2. Parse the numeric prefix from each directory name
 3. Use `max + 1`, zero-padded to 3 digits

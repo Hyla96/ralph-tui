@@ -30,10 +30,10 @@ When operating autonomously: flag ambiguity, document assumptions, log reasoning
 1. Read `CLAUDE.md` first. Then read every document file it references or that exists at the project root (`README.md`, `CHANGELOG.md`, `COMPONENT_ARCHITECTURE.md`, etc.). These files contain critical project conventions and context.
 2. Read `workflows.json` from `$RALPH_PLAN_DIR`
 3. Read `progress.txt` from `$RALPH_PLAN_DIR` — Codebase Patterns section first
-4. Pick the **highest priority** task where `passes: false`
+4. Pick the **highest priority** task where `passes: false`. Log the selected task ID at the top of your response: "**Selected task: [TASK-ID] — [title]**". This is the only task you will touch in this invocation. Do not select more than one.
 5. Ensure you're on the workflow's `branchName` branch — this is the **single shared branch for all tasks**. If it doesn't exist, create it from main. If it already exists, check it out. Do NOT create a new branch per task.
-6. **Analyze → Design → Implement → Validate → Review → Commit**
-7. Signal completion
+6. **Analyze → Design → Implement → Validate → Review → Commit** — scoped entirely to the selected task. Do not implement work belonging to any other task, even if that work appears to be a natural prerequisite or follow-on.
+7. Signal completion and **STOP**. The next task will be handled in a separate invocation.
 
 ## Implementation Standards
 
@@ -179,7 +179,7 @@ Impact: [effect on current and dependent tasks]
 After committing:
 
 1. Append progress report to `$RALPH_PLAN_DIR/progress.txt`
-2. Update `workflows.json`: set `passes: true` for the completed task
+2. Update `workflows.json`: set `passes: true` for **exactly the one task selected in step 4**. Never set `passes: true` on more than one task per invocation.
 3. Output <promise>RALPH_SENTINEL_COMPLETE</promise> then stop. Do not start the next task.
 
 ## Rules
@@ -188,7 +188,7 @@ After committing:
 - Never mention the word `RALPH_SENTINEL_COMPLETE` unless the signal completion step is reached, otherwise the Ralph loop will break prematurely.
 - Never commit `workflows.json`, `progress.txt`, or any files under `$RALPH_PLAN_DIR`
 - **Always use the `Read` tool** (not `Bash(cat:...)`) to read files — including `.ralph/` workflow files, `progress.txt`, and `workflows.json`. Resolve `$RALPH_PLAN_DIR` with a quick `echo` first if needed, then use `Read` with the absolute path.
-- One task per invocation — stop after completing it
+- **ONE TASK PER INVOCATION — HARD STOP.** After committing the selected task, do not implement any other task regardless of how related or dependent it appears. The Ralph loop will invoke this agent again for the next task.
 - Keep changes minimal and focused — solve the task, not adjacent problems
 - Follow existing code patterns in the project
 - Use semantic code tools (Serena) for retrieval when available
